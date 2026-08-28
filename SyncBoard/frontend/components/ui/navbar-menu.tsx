@@ -67,10 +67,8 @@ export const Menu = ({
     <nav
       onMouseLeave={() => setActive(null)}
       className={cn(
-        "relative mx-auto flex w-full items-center justify-between rounded-full border transition-all duration-300 z-50",
-        scrolled 
-          ? "py-2.5 px-6 bg-neutral-950/85 border-white/15 shadow-[0_8px_32px_0_rgba(0,0,0,0.5)] backdrop-blur-xl" 
-          : "py-4 px-8 bg-neutral-950/50 border-white/10 shadow-[0_4px_20px_0_rgba(0,0,0,0.3)] backdrop-blur-md"
+        "relative mx-auto flex w-full items-center justify-between rounded-full border transition-all duration-300 z-50 py-4 px-8 bg-neutral-950/50 border-white/10 shadow-[0_4px_20px_0_rgba(0,0,0,0.3)] backdrop-blur-md",
+        scrolled && "border-white/15 shadow-[0_8px_32px_0_rgba(0,0,0,0.5)] backdrop-blur-xl"
       )}
     >
       {/* LEFT: LOGO */}
