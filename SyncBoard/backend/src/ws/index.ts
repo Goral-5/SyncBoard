@@ -1,0 +1,150 @@
+import { WebSocketServer, WebSocket } from 'ws';
+import jwt from 'jsonwebtoken';
+import { Chat } from '../models/Chat';
+import { User } from '../models/User';
+import { Message } from '../models/Message'; // Bro, make sure this import exists
+
+const JWT_SECRET = process.env.JWT_SECRET!;
+
+interface UserType {
+  ws: WebSocket;
+  rooms: string[];
+  userId: string;
+}
+
+const users: UserType[] = [];
+
+function checkUser(token: string): string | null {
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET) as { userId: string };
+    return decoded.userId;
+  } catch {
+    return null;
+  }
+}
+
+export function attachWebSocketServer(server: any) {
+  const wss = new WebSocketServer({ server });
+
+  wss.on('connection', (ws, req) => {
+    const url = req.url ?? '';
+    const token = new URLSearchParams(url.split('?')[1]).get('token') || '';
+    const userId = checkUser(token);
+    
+    if (!userId) {
+      console.log('❌ Connection rejected: Invalid Token');
+      return ws.close();
+    }
+
+    console.log(`👤 User connected: ${userId}`);
+    users.push({ ws, rooms: [], userId });
+
+    ws.on('message', async (data) => {
+      try {
+        const parsed = typeof data === 'string' ? JSON.parse(data) : JSON.parse(data.toString());
+        const user = users.find(u => u.ws === ws);
+        if (!user) return;
+
+        const { type, roomId, elements, clientId, content } = parsed;
+
+        switch (type) {
+          case 'join_room':
+            if (!user.rooms.includes(roomId)) {
+              user.rooms.push(roomId);
+              console.log(`🏠 User ${user.userId} joined room: ${roomId}`);
+            }
+            break;
+
+          case 'drawing':
+            users.forEach(u => {
+              if (u.ws !== ws && u.rooms.includes(roomId)) {
+                u.ws.send(JSON.stringify({
+                  type: 'drawing',
+                  roomId,
+                  elements,
+                  clientId
+                }));
+              }
+            });
+            break;
+
+          case 'cursor': {
+            try {
+              let username = parsed.username || 'Collaborator';
+              
+              // Only query MongoDB if the userId is a valid 24-character hexadecimal ObjectId
+              const isValidObjectId = /^[0-9a-fA-F]{24}$/.test(user.userId);
+              if (isValidObjectId) {
+                const dbUser = await User.findById(user.userId).select('name');
+                if (dbUser) {
+                  username = dbUser.name;
+                }
+              }
+              
+              users.forEach(u => {
+                if (u.ws !== ws && u.rooms.includes(roomId)) {
+                  u.ws.send(JSON.stringify({
+                    type: 'cursor',
+                    roomId,
+                    pointer: parsed.pointer,
+                    clientId: parsed.clientId,
+                    color: parsed.color,
+                    username,
+                  }));
+                }
+              });
+            } catch (err) {
+              console.error('Error fetching username:', err);
+            }
+            break;
+          }
+
+          // --- NEW CHAT CASE ADDED ---
+          case 'chat': {
+            try {
+              console.log(`💬 New chat in ${roomId} from ${user.userId}`);
+              
+              // 1. Save to DB
+              const newMessage = await Message.create({
+                roomId,
+                userId: user.userId,
+                content: content
+              });
+
+              // 2. Populate for frontend
+              const populatedMessage = await newMessage.populate('userId', 'name photo');
+
+              // 3. Broadcast to EVERYONE in the room (including sender)
+              const payload = JSON.stringify({
+                type: 'chat',
+                roomId,
+                message: populatedMessage
+              });
+
+              users.forEach(u => {
+                if (u.rooms.includes(roomId)) {
+                  u.ws.send(payload);
+                }
+              });
+            } catch (err) {
+              console.error('Chat error:', err);
+            }
+            break;
+          }
+        }
+      } catch (e) {
+        console.error('WebSocket Error:', e);
+      }
+    });
+
+    ws.on('close', () => {
+      const idx = users.findIndex(u => u.ws === ws);
+      if (idx !== -1) {
+        console.log(`🚪 User disconnected: ${users[idx].userId}`);
+        users.splice(idx, 1);
+      }
+    });
+  });
+
+  console.log('🚀 WebSocket Server attached');
+}
