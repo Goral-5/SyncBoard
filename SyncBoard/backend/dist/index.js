@@ -15,12 +15,15 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const http_1 = __importDefault(require("http"));
 const mongoose_1 = __importDefault(require("mongoose"));
 const dotenv_1 = __importDefault(require("dotenv"));
+const dns_1 = __importDefault(require("dns"));
 const server_1 = require("./http/server");
 const index_1 = require("./ws/index");
 const path_1 = __importDefault(require("path"));
 dotenv_1.default.config();
 dotenv_1.default.config({ path: path_1.default.resolve(__dirname, '../.env') });
 dotenv_1.default.config({ path: path_1.default.resolve(__dirname, '../../.env') });
+// Ensure MongoDB Atlas SRV records resolve reliably across all DNS providers/Windows environments
+dns_1.default.setServers(['8.8.8.8', '1.1.1.1']);
 const MONGO_URI = process.env.MONGO_URI;
 const PORT = process.env.PORT || 5000;
 function startServer() {
