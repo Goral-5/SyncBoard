@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils";
 import createGlobe from "cobe";
 import { useEffect, useRef } from "react";
 import { MessageSquare } from "lucide-react"; 
-import { motion } from "motion/react";
+import { motion, type Variants } from "motion/react";
 
 export default function Discover() {
   const features = [
@@ -35,14 +35,15 @@ export default function Discover() {
     <div id="discover" className="relative z-20 py-10 lg:py-20 max-w-7xl mx-auto">
       <div className="px-8">
         <h4 className="text-3xl lg:text-5xl lg:leading-tight max-w-5xl mx-auto text-center tracking-tight font-medium text-black dark:text-white">
-          Complex Systems, Made Visual..
+          Complex Systems Made Visual
         </h4>
         <p className="text-sm lg:text-base max-w-2xl my-4 mx-auto text-neutral-500 text-center font-normal dark:text-neutral-300">
-          Design architectures, map data flows, and turn complex ideas into clear visual diagrams on a shared canvas.        </p>
+          Design architectures map data flows and turn complex ideas into clear visual diagrams on a shared canvas
+        </p>
       </div>
 
       <div className="relative">
-        <div className="grid grid-cols-1 lg:grid-cols-6 mt-12 xl:border rounded-md dark:border-neutral-800">
+        <div className="grid grid-cols-1 lg:grid-cols-6 mt-12 gap-6">
           {features.map((feature, idx) => {
             const isFullRow = feature.className.includes("lg:col-span-6");
             return (
@@ -73,7 +74,7 @@ export default function Discover() {
   );
 }
 
-const cardVariants = {
+const cardVariants: Variants = {
   hidden: {
     opacity: 0,
     y: 40,
@@ -97,16 +98,8 @@ const FeatureCard = ({ children, className, index }: { children?: React.ReactNod
       initial="hidden"
       whileInView="visible"
       viewport={{ once: true, margin: "-50px" }}
-      whileHover={{
-        y: -8,
-        boxShadow: "0 20px 40px rgba(0, 0, 0, 0.2), 0 0 30px rgba(255, 255, 255, 0.02)",
-      }}
-      transition={{
-        y: { duration: 0.4, ease: [0.22, 1, 0.36, 1] },
-        boxShadow: { duration: 0.4, ease: [0.22, 1, 0.36, 1] },
-      }}
       className={cn(
-        "p-4 sm:p-8 relative overflow-hidden h-[500px] md:h-[500px] flex flex-col group bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl",
+        "p-4 sm:p-8 relative overflow-hidden h-[500px] md:h-[500px] flex flex-col bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl",
         className
       )}
     >
@@ -137,7 +130,7 @@ export const SkeletonOne = () => {
       <img
         src="/Canvas.jpeg"
         alt="Excalidraw Interface"
-        className="h-full w-full object-cover object-left-top rounded-lg opacity-100 transition-transform duration-700 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:scale-[1.05]"
+        className="h-full w-full object-cover object-left-top rounded-lg opacity-100"
       />
     </div>
   );
@@ -199,7 +192,7 @@ export const SkeletonTwo = () => {
         <div className="flex-1 w-full mt-4 border-2 border-dashed border-neutral-200 dark:border-neutral-800 rounded-lg bg-white dark:bg-black p-2 overflow-hidden">
            <img 
             src="/Canvas.jpeg"
-            className="w-full h-full object-contain opacity-90 dark:opacity-10 grayscale transition-transform duration-700 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:scale-[1.05]" 
+            className="w-full h-full object-contain opacity-90 dark:opacity-10 grayscale" 
             alt="canvas" 
            />
         </div>

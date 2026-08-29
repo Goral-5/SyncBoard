@@ -3,7 +3,6 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 
 export default function FAQWithSpiral() {
   const spiralRef = useRef<HTMLDivElement | null>(null);
-  const [panelOpen, setPanelOpen] = useState(false);
   const [query, setQuery] = useState("");
 
   // Spiral configuration
@@ -60,17 +59,6 @@ export default function FAQWithSpiral() {
       console.assert(filtered.length === 1, "Filter should match one item containing 'yes'");
     } catch {}
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Keyboard shortcuts
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const k = e.key.toLowerCase();
-      if (k === "h") setPanelOpen((v) => !v);
-      if (k === "r") randomize();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   // Generate spiral SVG and mount
@@ -256,13 +244,22 @@ const faqs = [
               Get all your questions answered about SyncBoard.
             </p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="relative flex items-center">
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search questions…"
-              className="h-10 w-56 rounded-xl border border-white/20 bg-transparent px-3 text-sm outline-none transition focus:border-white/60"
+              className="h-10 w-56 rounded-xl border border-white/20 bg-transparent pl-3 pr-8 text-sm outline-none transition focus:border-white/60"
             />
+            {query && (
+              <button
+                onClick={() => setQuery("")}
+                className="absolute right-2.5 text-xs text-white/50 hover:text-white"
+                aria-label="Clear search"
+              >
+                ✕
+              </button>
+            )}
           </div>
         </header>
 
@@ -277,55 +274,6 @@ const faqs = [
 
        
       </div>
-
-      {/* Control Panel */}
-      {panelOpen && (
-        <aside className="fixed right-4 top-4 z-20 w-[320px] rounded-2xl border border-white/15 bg-black/70 p-4 backdrop-blur">
-          <h3 className="mb-3 text-sm font-semibold tracking-wide text-white/80">Spiral Controls</h3>
-          <div className="space-y-3 text-xs">
-            <Slider label="Points" min={100} max={2000} step={50} value={cfg.points} onChange={(v)=> setCfg({...cfg, points: v})} />
-            <Slider label="Dot radius" min={0.5} max={5} step={0.1} value={cfg.dotRadius} onChange={(v)=> setCfg({...cfg, dotRadius: v})} />
-            <Slider label="Duration" min={1} max={10} step={0.1} value={cfg.duration} onChange={(v)=> setCfg({...cfg, duration: v})} />
-
-            <Toggle label="Pulse" value={cfg.pulseEffect} onChange={(v)=> setCfg({...cfg, pulseEffect: v})} />
-            <Slider label="Opacity min" min={0} max={1} step={0.05} value={cfg.opacityMin} onChange={(v)=> setCfg({...cfg, opacityMin: v})} />
-            <Slider label="Opacity max" min={0} max={1} step={0.05} value={cfg.opacityMax} onChange={(v)=> setCfg({...cfg, opacityMax: v})} />
-            <Slider label="Size min" min={0.1} max={2} step={0.1} value={cfg.sizeMin} onChange={(v)=> setCfg({...cfg, sizeMin: v})} />
-            <Slider label="Size max" min={0.1} max={3} step={0.1} value={cfg.sizeMax} onChange={(v)=> setCfg({...cfg, sizeMax: v})} />
-
-            <Select
-              label="Gradient"
-              value={cfg.gradient}
-              options={[
-                { label: "None", value: "none" },
-                { label: "Rainbow", value: "rainbow" },
-                { label: "Sunset", value: "sunset" },
-                { label: "Ocean", value: "ocean" },
-                { label: "Fire", value: "fire" },
-                { label: "Neon", value: "neon" },
-                { label: "Pastel", value: "pastel" },
-                { label: "Grayscale", value: "grayscale" },
-              ]}
-              onChange={(v)=> setCfg({...cfg, gradient: v as any})}
-            />
-
-            <div className="flex gap-2">
-              <button
-                onClick={randomize}
-                className="w-full rounded-xl border border-white/20 px-3 py-2 text-xs hover:border-white/50"
-              >
-                Randomize (R)
-              </button>
-              <button
-                onClick={() => setPanelOpen(false)}
-                className="rounded-xl border border-white/20 px-3 py-2 text-xs hover:border-white/50"
-              >
-                Close (H)
-              </button>
-            </div>
-          </div>
-        </aside>
-      )}
     </div>
   );
 }

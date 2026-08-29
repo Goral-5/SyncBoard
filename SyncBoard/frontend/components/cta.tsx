@@ -25,7 +25,7 @@ function Cta() {
         <div>
           <h2 className="text-4xl font-normal tracking-tight text-neutral-900 sm:text-5xl dark:text-neutral-400">
             Bring every idea into focus <br />
-            <span className="font-bold text-black dark:text-white">Design, discuss, and decide in one shared workspace.</span>
+            <span className="font-bold text-black dark:text-white">Design discuss and decide in one shared workspace.</span>
           </h2>
           <p className="mt-4 max-w-lg text-base text-neutral-600 dark:text-neutral-300">
             From quick sketches to complex system diagrams, SyncBoard gives teams a flexible canvas to visualize ideas and turn them into action.

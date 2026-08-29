@@ -14,8 +14,15 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "SyncBoard",
-  description: "Canvas Board",
+  title: "SyncBoard - Real-Time Collaborative Canvas",
+  description: "A real-time collaborative whiteboard where teams brainstorm, design, and build together on one shared canvas.",
+  icons: {
+    icon: [
+      { url: "/icon.svg", type: "image/svg+xml" },
+    ],
+    shortcut: "/icon.svg",
+    apple: "/icon.svg",
+  },
 };
 
 export default function RootLayout({

@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 // import { renderCanvas } from "@/components/ui/canvas"
 import { DIcons } from "dicons";
 import { Button } from "@/components/ui/button";
+import { ArrowRight } from "lucide-react";
 
 export function Hero() {
   const router = useRouter();
@@ -56,14 +57,15 @@ export function Hero() {
                   strokeWidth={4}
                   className="text-ali absolute -bottom-5 -right-5 h-10 w-10"
                 />
-                Create. Collaborate. Synchronized.
+                Create Collaborate Synchronize
 
               </h1>
               
                 
-                <div className="flex justify-center gap-2">
-            <Button variant="default" size="lg" onClick={handleGetStarted}>
+                <div className="flex justify-center gap-2 mt-6 md:mt-8">
+            <Button variant="default" size="lg" className="group rounded-full px-6 font-semibold" onClick={handleGetStarted}>
               Open Workspace
+              <ArrowRight className="ml-2 h-4 w-4 transition-transform group-hover:translate-x-1" />
             </Button>
           </div>
               
@@ -76,7 +78,7 @@ export function Hero() {
           </h1>
 
           <p className="md:text-md mx-auto mb-16 mt-2 max-w-2xl px-6 text-sm text-primary/60 sm:px-6 md:max-w-4xl md:px-20 lg:text-lg">
-            Brainstorm ideas, map concepts, and collaborate in real time on an infinite digital canvas.
+            Brainstorm ideas map concepts and collaborate in real time on an infinite digital canvas.
           </p>
           
         </div>
