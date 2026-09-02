@@ -16,6 +16,7 @@ import { Message } from '../models/Message';
 import nodemailer from 'nodemailer';
 
 import path from 'path';
+
 dotenv.config();
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
@@ -23,7 +24,7 @@ dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 // ── Cloudinary config ─────────────────────────────────────────────────────────
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME!,
-  api_key:    process.env.CLOUDINARY_API_KEY!,
+  api_key: process.env.CLOUDINARY_API_KEY!,
   api_secret: process.env.CLOUDINARY_API_SECRET!,
 });
 
@@ -32,48 +33,55 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB max
 });
-passport.use(
-  new GoogleStrategy(
-    {
-      clientID: process.env.GOOGLE_CLIENT_ID!,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
-      callbackURL: "/auth/google/callback",
-      proxy: true,
-    },
-    async (_accessToken, _refreshToken, profile, done) => {
-      try {
-        const email = profile.emails?.[0].value;
 
-        if (!email) {
-          return done(new Error("No email returned from Google"), undefined);
-        }
+/*
+ * ── Google OAuth ──────────────────────────────────────────────────────────────
+ *
+ * Temporarily disabled because Google OAuth credentials are not configured.
+ * SyncBoard currently uses JWT authentication for normal login/signup.
+ *
+ * We can enable Google OAuth later if required.
+ */
 
-        let user = await User.findOne({ email });
+// passport.use(
+//   new GoogleStrategy(
+//     {
+//       clientID: process.env.GOOGLE_CLIENT_ID!,
+//       clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+//       callbackURL: "/auth/google/callback",
+//       proxy: true,
+//     },
+//     async (_accessToken, _refreshToken, profile, done) => {
+//       try {
+//         const email = profile.emails?.[0].value;
 
-        // 🔁 Account linking
-        if (!user) {
-          user = await User.create({
-            email,
-            name: profile.displayName,
-            password: "GOOGLE_OAUTH", // placeholder
-            googleId: profile.id,
-            authProvider: "google", 
-          });
+//         if (!email) {
+//           return done(new Error("No email returned from Google"), undefined);
+//         }
 
+//         let user = await User.findOne({ email });
 
-        } else if (!user.googleId) {
-          user.googleId = profile.id;
-          user.authProvider = "google";
-          await user.save();
-        }
+//         if (!user) {
+//           user = await User.create({
+//             email,
+//             name: profile.displayName,
+//             password: "GOOGLE_OAUTH",
+//             googleId: profile.id,
+//             authProvider: "google",
+//           });
+//         } else if (!user.googleId) {
+//           user.googleId = profile.id;
+//           user.authProvider = "google";
+//           await user.save();
+//         }
 
-        return done(null, user);
-      } catch (err) {
-        return done(err as Error, undefined);
-      }
-    }
-  )
-);
+//         return done(null, user);
+//       } catch (err) {
+//         return done(err as Error, undefined);
+//       }
+//     }
+//   )
+// );
 
 const JWT_SECRET = process.env.JWT_SECRET!;
 const MONGO_URI = process.env.MONGO_URI!;
@@ -81,8 +89,11 @@ const MONGO_URI = process.env.MONGO_URI!;
 
 export function createExpressApp() {
   const app = express();
+
   app.set("trust proxy", 1);
+
   app.use(express.json());
+
   app.use(passport.initialize());
 
   app.use(cors({
@@ -98,382 +109,623 @@ export function createExpressApp() {
   });
 
   app.get('/health', (req, res) => {
-    res.json({ status: 'ok', mongodb: mongoose.connection.readyState === 1 });
+    res.json({
+      status: 'ok',
+      mongodb: mongoose.connection.readyState === 1
+    });
   });
 
-// ---------------------- SIGNUP ----------------------
-app.post("/signup", async (req, res) => {
-  const { email, password, name } = req.body;
+  // ---------------------- SIGNUP ----------------------
 
-  if (!email || !password || !name) {
-    return res.status(400).json({ message: "Missing inputs" });
-  }
+  app.post("/signup", async (req, res) => {
+    const { email, password, name } = req.body;
 
-  try {
-    const existing = await User.findOne({ email });
+    if (!email || !password || !name) {
+      return res.status(400).json({
+        message: "Missing inputs"
+      });
+    }
 
-    //  Email already exists
-    if (existing) {
-      // Google account exists → tell user what to do
-      if (existing.authProvider === "google") {
+    try {
+      const existing = await User.findOne({ email });
+
+      if (existing) {
+
+        if (existing.authProvider === "google") {
+          return res.status(409).json({
+            message: "Account exists. Please sign up using Google",
+          });
+        }
+
         return res.status(409).json({
-          message: "Account exists. Please sign up using Google",
+          message: "Email already exists"
         });
       }
 
-      return res.status(409).json({ message: "Email already exists" });
+      const hashedPassword = await bcrypt.hash(password, 10);
+
+      const user = await User.create({
+        email,
+        password: hashedPassword,
+        name,
+        authProvider: "local",
+      });
+
+      return res.status(201).json({
+        userId: user._id
+      });
+
+    } catch (err) {
+      console.error("Signup error:", err);
+
+      return res.status(500).json({
+        message: "Server error"
+      });
     }
+  });
 
-    const hashedPassword = await bcrypt.hash(password, 10);
 
-    const user = await User.create({
+  // ---------------------- LOGIN ----------------------
+
+  app.post("/login", async (req, res) => {
+    const { email, password } = req.body;
+
+    console.log('Login attempt:', {
       email,
-      password: hashedPassword,
-      name,
-      authProvider: "local",
+      hasPassword: !!password
     });
 
-    return res.status(201).json({ userId: user._id });
-  } catch (err) {
-    console.error("Signup error:", err);
-    return res.status(500).json({ message: "Server error" });
-  }
-});
-
-
-// ---------------------- LOGIN ----------------------
-app.post("/login", async (req, res) => {
-  const { email, password } = req.body;
-
-  console.log('Login attempt:', { email, hasPassword: !!password });
-
-  if (!email || !password) {
-    return res.status(400).json({ message: "Missing inputs" });
-  }
-
-  try {
-    const user = await User.findOne({ email });
-
-    // ❌ User not found
-    if (!user) {
-      console.log('User not found:', email);
-      return res.status(403).json({ message: "Invalid email or password" });
-    }
-
-    console.log('User found:', { email, authProvider: user.authProvider });
-
-    // 🔐 Google-only account
-    if (user.authProvider === "google") {
-      return res.status(403).json({
-        message: "This account uses Google sign-in",
+    if (!email || !password) {
+      return res.status(400).json({
+        message: "Missing inputs"
       });
     }
 
-    // 🔐 Local account but password missing (edge safety)
-    if (!user.password) {
-      return res.status(403).json({
-        message: "Password login unavailable for this account",
-      });
-    }
+    try {
+      const user = await User.findOne({ email });
 
-    const validPassword = await bcrypt.compare(password, user.password);
+      if (!user) {
+        console.log('User not found:', email);
 
-    // ❌ Wrong password
-    if (!validPassword) {
-      console.log('Invalid password for:', email);
-      return res.status(403).json({ message: "Invalid email or password" });
-    }
-
-    // ✅ Success
-    console.log('Login successful:', email);
-    const token = jwt.sign(
-      { userId: user._id },
-      JWT_SECRET,
-      { expiresIn: "7d" }
-    );
-
-    return res.json({ token });
-  } catch (err) {
-    console.error("Login error:", err);
-    return res.status(500).json({ message: "Server error" });
-  }
-});
-
-
-// ---------------------- CREATE ROOM ----------------------
-app.post('/create-room', middleware, async (req: any, res) => {
-  const { name } = req.body;
-  if (!name) return res.status(400).json({ message: 'Missing room name' });
-
-  try {
-    const exists = await Room.findOne({ slug: name });
-    if (exists) return res.status(409).json({ message: 'Room already exists' });
-
-    const room = await Room.create({ slug: name, adminId: req.userId });
-    res.json({ roomId: room._id });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ message: 'Failed to create room' });
-  }
-});
-
-// ---------------------- GET ALL ROOMS ----------------------
-app.get('/my-rooms', middleware, async (req: any, res) => {
-  try {
-    const userId = req.userId;
-
-    const rooms = await Room.find({
-      $or: [
-        { adminId: userId },
-        { collaborators: userId }
-      ]
-    })
-    // We populate 'name' from the User collection linked to these IDs
-    .populate('adminId', 'name') 
-    .populate('collaborators', 'name')
-    .sort({ createdAt: -1 });
-    console.log(rooms);
-    res.json({ rooms });
-  } catch (e) {
-    console.error('Failed to fetch rooms:', e);
-    res.status(500).json({ message: 'Failed to fetch rooms' });
-  }
-});
-
-// ---------------------- GET LOGGED IN USER DATA ----------------------
-app.get('/me', middleware, async (req: any, res) => {
-  try {
-    const userId = req.userId;
-
-    // Find user by ID but exclude the password field for security
-    const user = await User.findById(userId).select('-password');
-
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-    console.log(user);
-    res.json({
-      user
-    });
-    
-  } catch (e) {
-    console.error('Failed to fetch user:', e);
-    res.status(500).json({ message: 'Internal server error' });
-  }
-});
-
-// ---------------------- UPDATE LOGGED IN USER DATA ----------------------
-app.post('/me', middleware, async (req: any, res) => {
-  try {
-    const { name, photo } = req.body;
-    const userId = req.userId;
-
-    const updatedUser = await User.findByIdAndUpdate(
-      userId,
-      { name, photo },
-      { new: true }
-    ).select('-password');
-
-    res.json({ message: 'Profile updated', user: updatedUser });
-  } catch (e) {
-    res.status(500).json({ message: 'Error updating profile' });
-  }
-});
-
-// ---------------------- GET CHATS ----------------------
-app.get('/chats/:roomId', async (req, res) => {
-  try {
-    const roomId = req.params.roomId;
-    const messages = await Chat.find({ roomId }).sort({ createdAt: -1 }).limit(1000);
-    res.json({ messages });
-  } catch (e) {
-    console.error(e);
-    res.json({ messages: [] });
-  }
-});
-
-// ---------------------- GET ROOM DETAILS ----------------------
-app.get('/room/:slug', async (req, res) => {
-  const slug = req.params.slug;
-  const room = await Room.findOne({ slug });
-  res.json({ room });
-});
-
-// ---------------------- ADD COLLABORATOR TO ROOM ----------------------
-app.post('/rooms/:roomId/add-collaborator', middleware, async (req, res) => {
-  const { roomId } = req.params;
-  const { username, useremail } = req.body;
-
-  if (!username || !useremail) return res.status(400).json({ message: 'Username or User email is required' });
-
-  try {
-    const userToAdd = await User.findOne({ name: username });
-    if (!userToAdd) {
-      // Fetch the room to get the slug
-      const room = await Room.findById(roomId);
-      if (!room) {
-        return res.status(404).json({ message: 'Room not found' });
-      }
-      // Send invitation email using nodemailer
-      try {
-        const transporter = nodemailer.createTransport({
-          host: 'smtp.gmail.com',
-          port: 465,
-          secure: true,
-          auth: {
-            user: process.env.GMAIL_USER!,
-            pass: process.env.GMAIL_PASS!,
-          },
+        return res.status(403).json({
+          message: "Invalid email or password"
         });
-        const mailOptions = {
-          from: process.env.GMAIL_USER,
-          to: useremail,
-          subject: `Invitation to join SyncBoard Room`,
-          text: `Hello,\n\nYou have been invited to join the room '${room.slug}' on SyncBoard. Please create an account using this email to join the room as a collaborator.\n\nBest regards,\nSyncBoard Team`,
-        };
-        await transporter.sendMail(mailOptions);
-        return res.status(404).json({ message: 'No such user found, but an invitation email has been sent to create an account and join the room!' });
-        
-      } catch (mailErr) {
-        console.error('Failed to send invitation email:', mailErr);
-        return res.status(404).json({ message: 'No such user found, and failed to send invitation email.' });
       }
-    }
 
-    const room = await Room.findById(roomId);
-    if (!room) return res.status(404).json({ message: 'Room not found' });
+      console.log('User found:', {
+        email,
+        authProvider: user.authProvider
+      });
 
-    // Ensure collaborators array exists
-    if (!Array.isArray(room.collaborators)) {
-      room.collaborators = [];
-    }
+      if (user.authProvider === "google") {
+        return res.status(403).json({
+          message: "This account uses Google sign-in",
+        });
+      }
 
-    // Check if already a collaborator
-    const isAlreadyCollaborator = room.collaborators.some(
-      (id) => id.toString() === userToAdd._id.toString()
-    );
-    if (isAlreadyCollaborator) {
-      return res.status(400).json({ message: 'User is already a collaborator' });
-    }
+      if (!user.password) {
+        return res.status(403).json({
+          message: "Password login unavailable for this account",
+        });
+      }
 
-    // Don't allow admin to add themselves again
-    if (room.adminId.toString() === userToAdd._id.toString()) {
-      return res.status(400).json({ message: 'Admin is already in the room' });
-    }
+      const validPassword = await bcrypt.compare(
+        password,
+        user.password
+      );
 
-    // Add collaborator and save
-    room.collaborators.push(userToAdd._id);
-    await room.save();
+      if (!validPassword) {
+        console.log('Invalid password for:', email);
 
-    res.status(200).json({ message: `${username} added as collaborator`, collaboratorId: userToAdd._id });
-  } catch (e) {
-    console.error('Error adding collaborator:', e);
-    res.status(500).json({ message: 'Failed to add collaborator' });
-  }
-});
+        return res.status(403).json({
+          message: "Invalid email or password"
+        });
+      }
 
+      console.log('Login successful:', email);
 
-// ---------------------- STORE CHAT ----------------------
-app.post('/chats/:roomId', middleware, async (req: any, res) => {
-  try {
-    const roomId = req.params.roomId;
-    const { message } = req.body;
-
-    await Chat.create({
-      roomId,
-      userId: req.userId,
-      message
-    });
-
-    res.status(200).json({ message: 'Drawing stored' });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ message: 'Failed to store drawing' });
-  }
-});
-
-// ---------------------- GET TEXT CHAT ----------------------
-app.get('/rooms/:roomId/messages', middleware, async (req: any, res) => {
-  try {
-    const messages = await Message.find({ roomId: req.params.roomId })
-      .populate('userId', 'name photo')
-      .sort({ createdAt: 1 }); // Oldest to newest
-    res.json({ messages });
-  } catch (e) {
-    res.status(500).json({ message: 'Error fetching chat history' });
-  }
-});
-
-// ---------------------- GOOGLE AUTH ----------------------
-app.get(
-  "/auth/google",
-  passport.authenticate("google", {
-    scope: ["profile", "email"],
-    session: false,
-  })
-);
-
-
-app.get(
-  "/auth/google/callback",
-  passport.authenticate("google", {
-    session: false,
-    failureRedirect: "https://sketchcalibur.vercel.app/auth", // Redirect on fail
-  }),
-  (req, res) => {
-    const user = req.user as any;
-
-    const token = jwt.sign(
-      { userId: user._id },
-      JWT_SECRET,
-      { expiresIn: "7d" }
-    );
-
-    // 🚀 REDIRECT back to frontend with the token in the URL
-    // Use your production URL here
-    const frontendUrl = "https://sketchcalibur.vercel.app/dashboard"; 
-    return res.redirect(`${frontendUrl}?token=${token}`);
-  }
-);
-
-// ---------------------- UPLOAD IMAGE TO CLOUDINARY ----------------------
-// Called by the frontend whenever an image element is pasted/inserted.
-// Returns a permanent Cloudinary URL that replaces the base64 dataURL.
-app.post('/upload-image', middleware, upload.single('image'), async (req: any, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ message: 'No image file provided' });
-    }
-
-    // Upload buffer to Cloudinary
-    const result = await new Promise<any>((resolve, reject) => {
-      const stream = cloudinary.uploader.upload_stream(
+      const token = jwt.sign(
         {
-          folder:         'sketchcalibur',
-          resource_type:  'image',
-          // Keep original quality — canvas images should not be compressed
-          quality:        'auto:best',
+          userId: user._id
         },
-        (error, result) => {
-          if (error) reject(error);
-          else resolve(result);
+        JWT_SECRET,
+        {
+          expiresIn: "7d"
         }
       );
-      stream.end(req.file!.buffer);
+
+      return res.json({
+        token
+      });
+
+    } catch (err) {
+      console.error("Login error:", err);
+
+      return res.status(500).json({
+        message: "Server error"
+      });
+    }
+  });
+
+
+  // ---------------------- CREATE ROOM ----------------------
+
+  app.post('/create-room', middleware, async (req: any, res) => {
+    const { name } = req.body;
+
+    if (!name) {
+      return res.status(400).json({
+        message: 'Missing room name'
+      });
+    }
+
+    try {
+      const exists = await Room.findOne({
+        slug: name
+      });
+
+      if (exists) {
+        return res.status(409).json({
+          message: 'Room already exists'
+        });
+      }
+
+      const room = await Room.create({
+        slug: name,
+        adminId: req.userId
+      });
+
+      res.json({
+        roomId: room._id
+      });
+
+    } catch (e) {
+      console.error(e);
+
+      res.status(500).json({
+        message: 'Failed to create room'
+      });
+    }
+  });
+
+
+  // ---------------------- GET ALL ROOMS ----------------------
+
+  app.get('/my-rooms', middleware, async (req: any, res) => {
+    try {
+      const userId = req.userId;
+
+      const rooms = await Room.find({
+        $or: [
+          { adminId: userId },
+          { collaborators: userId }
+        ]
+      })
+        .populate('adminId', 'name')
+        .populate('collaborators', 'name')
+        .sort({ createdAt: -1 });
+
+      console.log(rooms);
+
+      res.json({
+        rooms
+      });
+
+    } catch (e) {
+      console.error('Failed to fetch rooms:', e);
+
+      res.status(500).json({
+        message: 'Failed to fetch rooms'
+      });
+    }
+  });
+
+
+  // ---------------------- GET LOGGED IN USER DATA ----------------------
+
+  app.get('/me', middleware, async (req: any, res) => {
+    try {
+      const userId = req.userId;
+
+      const user = await User.findById(userId)
+        .select('-password');
+
+      if (!user) {
+        return res.status(404).json({
+          message: 'User not found'
+        });
+      }
+
+      console.log(user);
+
+      res.json({
+        user
+      });
+
+    } catch (e) {
+      console.error('Failed to fetch user:', e);
+
+      res.status(500).json({
+        message: 'Internal server error'
+      });
+    }
+  });
+
+
+  // ---------------------- UPDATE LOGGED IN USER DATA ----------------------
+
+  app.post('/me', middleware, async (req: any, res) => {
+    try {
+      const { name, photo } = req.body;
+
+      const userId = req.userId;
+
+      const updatedUser = await User.findByIdAndUpdate(
+        userId,
+        {
+          name,
+          photo
+        },
+        {
+          new: true
+        }
+      ).select('-password');
+
+      res.json({
+        message: 'Profile updated',
+        user: updatedUser
+      });
+
+    } catch (e) {
+      res.status(500).json({
+        message: 'Error updating profile'
+      });
+    }
+  });
+
+
+  // ---------------------- GET CHATS ----------------------
+
+  app.get('/chats/:roomId', async (req, res) => {
+    try {
+      const roomId = req.params.roomId;
+
+      const messages = await Chat.find({
+        roomId
+      })
+        .sort({ createdAt: -1 })
+        .limit(1000);
+
+      res.json({
+        messages
+      });
+
+    } catch (e) {
+      console.error(e);
+
+      res.json({
+        messages: []
+      });
+    }
+  });
+
+
+  // ---------------------- GET ROOM DETAILS ----------------------
+
+  app.get('/room/:slug', async (req, res) => {
+    const slug = req.params.slug;
+
+    const room = await Room.findOne({
+      slug
     });
 
     res.json({
-      success:  true,
-      url:      result.secure_url,
-      publicId: result.public_id,
-      width:    result.width,
-      height:   result.height,
+      room
     });
-  } catch (e) {
-    console.error('Cloudinary upload error:', e);
-    res.status(500).json({ message: 'Image upload failed' });
-  }
-});
+  });
+
+
+  // ---------------------- ADD COLLABORATOR TO ROOM ----------------------
+
+  app.post(
+    '/rooms/:roomId/add-collaborator',
+    middleware,
+    async (req, res) => {
+
+      const { roomId } = req.params;
+
+      const { username, useremail } = req.body;
+
+      if (!username || !useremail) {
+        return res.status(400).json({
+          message: 'Username or User email is required'
+        });
+      }
+
+      try {
+
+        const userToAdd = await User.findOne({
+          name: username
+        });
+
+        if (!userToAdd) {
+
+          const room = await Room.findById(roomId);
+
+          if (!room) {
+            return res.status(404).json({
+              message: 'Room not found'
+            });
+          }
+
+          try {
+
+            const transporter = nodemailer.createTransport({
+              host: 'smtp.gmail.com',
+              port: 465,
+              secure: true,
+              auth: {
+                user: process.env.GMAIL_USER!,
+                pass: process.env.GMAIL_PASS!,
+              },
+            });
+
+            const mailOptions = {
+              from: process.env.GMAIL_USER,
+              to: useremail,
+              subject: `Invitation to join SyncBoard Room`,
+              text:
+                `Hello,\n\nYou have been invited to join the room '${room.slug}' on SyncBoard. Please create an account using this email to join the room as a collaborator.\n\nBest regards,\nSyncBoard Team`,
+            };
+
+            await transporter.sendMail(mailOptions);
+
+            return res.status(404).json({
+              message:
+                'No such user found, but an invitation email has been sent to create an account and join the room!'
+            });
+
+          } catch (mailErr) {
+
+            console.error(
+              'Failed to send invitation email:',
+              mailErr
+            );
+
+            return res.status(404).json({
+              message:
+                'No such user found, and failed to send invitation email.'
+            });
+          }
+        }
+
+        const room = await Room.findById(roomId);
+
+        if (!room) {
+          return res.status(404).json({
+            message: 'Room not found'
+          });
+        }
+
+        if (!Array.isArray(room.collaborators)) {
+          room.collaborators = [];
+        }
+
+        const isAlreadyCollaborator =
+          room.collaborators.some(
+            (id) =>
+              id.toString() === userToAdd._id.toString()
+          );
+
+        if (isAlreadyCollaborator) {
+          return res.status(400).json({
+            message: 'User is already a collaborator'
+          });
+        }
+
+        if (
+          room.adminId.toString() ===
+          userToAdd._id.toString()
+        ) {
+          return res.status(400).json({
+            message: 'Admin is already in the room'
+          });
+        }
+
+        room.collaborators.push(userToAdd._id);
+
+        await room.save();
+
+        res.status(200).json({
+          message: `${username} added as collaborator`,
+          collaboratorId: userToAdd._id
+        });
+
+      } catch (e) {
+
+        console.error(
+          'Error adding collaborator:',
+          e
+        );
+
+        res.status(500).json({
+          message: 'Failed to add collaborator'
+        });
+      }
+    }
+  );
+
+
+  // ---------------------- STORE CHAT ----------------------
+
+  app.post(
+    '/chats/:roomId',
+    middleware,
+    async (req: any, res) => {
+
+      try {
+
+        const roomId = req.params.roomId;
+
+        const { message } = req.body;
+
+        await Chat.create({
+          roomId,
+          userId: req.userId,
+          message
+        });
+
+        res.status(200).json({
+          message: 'Drawing stored'
+        });
+
+      } catch (e) {
+
+        console.error(e);
+
+        res.status(500).json({
+          message: 'Failed to store drawing'
+        });
+      }
+    }
+  );
+
+
+  // ---------------------- GET TEXT CHAT ----------------------
+
+  app.get(
+    '/rooms/:roomId/messages',
+    middleware,
+    async (req: any, res) => {
+
+      try {
+
+        const messages = await Message.find({
+          roomId: req.params.roomId
+        })
+          .populate('userId', 'name photo')
+          .sort({ createdAt: 1 });
+
+        res.json({
+          messages
+        });
+
+      } catch (e) {
+
+        res.status(500).json({
+          message: 'Error fetching chat history'
+        });
+      }
+    }
+  );
+
+
+  // ---------------------- GOOGLE AUTH ----------------------
+
+  /*
+   * Google OAuth is currently disabled because the GoogleStrategy
+   * is not configured.
+   *
+   * Keep these routes commented out until we decide to enable
+   * Google authentication.
+   */
+
+  // app.get(
+  //   "/auth/google",
+  //   passport.authenticate("google", {
+  //     scope: ["profile", "email"],
+  //     session: false,
+  //   })
+  // );
+
+
+  // app.get(
+  //   "/auth/google/callback",
+  //   passport.authenticate("google", {
+  //     session: false,
+  //     failureRedirect: "https://sketchcalibur.vercel.app/auth",
+  //   }),
+  //   (req, res) => {
+  //     const user = req.user as any;
+
+  //     const token = jwt.sign(
+  //       { userId: user._id },
+  //       JWT_SECRET,
+  //       { expiresIn: "7d" }
+  //     );
+
+  //     const frontendUrl =
+  //       "https://sketchcalibur.vercel.app/dashboard";
+
+  //     return res.redirect(
+  //       `${frontendUrl}?token=${token}`
+  //     );
+  //   }
+  // );
+
+
+  // ---------------------- UPLOAD IMAGE TO CLOUDINARY ----------------------
+
+  app.post(
+    '/upload-image',
+    middleware,
+    upload.single('image'),
+    async (req: any, res) => {
+
+      try {
+
+        if (!req.file) {
+          return res.status(400).json({
+            message: 'No image file provided'
+          });
+        }
+
+        const result = await new Promise<any>(
+          (resolve, reject) => {
+
+            const stream =
+              cloudinary.uploader.upload_stream(
+                {
+                  folder: 'sketchcalibur',
+                  resource_type: 'image',
+                  quality: 'auto:best',
+                },
+                (error, result) => {
+
+                  if (error) {
+                    reject(error);
+                  } else {
+                    resolve(result);
+                  }
+                }
+              );
+
+            stream.end(req.file!.buffer);
+          }
+        );
+
+        res.json({
+          success: true,
+          url: result.secure_url,
+          publicId: result.public_id,
+          width: result.width,
+          height: result.height,
+        });
+
+      } catch (e) {
+
+        console.error(
+          'Cloudinary upload error:',
+          e
+        );
+
+        res.status(500).json({
+          message: 'Image upload failed'
+        });
+      }
+    }
+  );
+
 
   return app;
 }
