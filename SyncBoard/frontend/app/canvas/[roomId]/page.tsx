@@ -2,11 +2,13 @@
 
 import dynamic from 'next/dynamic';
 import { useEffect, useRef, useState, useCallback } from 'react';
+// @ts-expect-error Excalidraw ships this stylesheet without TypeScript declarations.
 import '@excalidraw/excalidraw/index.css';
 import { RoomChat } from '@/components/RoomChat';
 import { useParams } from 'next/navigation';
 import { BACKEND_URL, WSS_URL } from '../../../config';
 import { ToastContainer, toast } from 'react-toastify';
+// @ts-expect-error react-toastify ships this stylesheet without TypeScript declarations.
 import 'react-toastify/dist/ReactToastify.css';
 import { mlService } from '@/lib/mlService';
 import { syncImagesToCloudinary, restoreImagesFromElements, uploadImageToCloudinary } from '@/lib/imageService';

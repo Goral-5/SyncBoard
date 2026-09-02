@@ -31,6 +31,8 @@ function startServer() {
         try {
             yield mongoose_1.default.connect(MONGO_URI);
             console.log('✅ Connected to MongoDB');
+            console.log('📦 Database:', mongoose_1.default.connection.name);
+            console.log('🗄️ Host:', mongoose_1.default.connection.host);
             const app = (0, server_1.createExpressApp)();
             const server = http_1.default.createServer(app);
             (0, index_1.attachWebSocketServer)(server);

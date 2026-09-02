@@ -136,6 +136,7 @@ function createExpressApp() {
                 name,
                 authProvider: "local",
             });
+            console.log("✅ USER SAVED:", user._id, user.email);
             return res.status(201).json({
                 userId: user._id
             });

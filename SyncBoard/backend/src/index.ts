@@ -20,6 +20,8 @@ async function startServer() {
   try {
     await mongoose.connect(MONGO_URI);
     console.log('✅ Connected to MongoDB');
+    console.log('📦 Database:', mongoose.connection.name);
+    console.log('🗄️ Host:', mongoose.connection.host);
 
     const app = createExpressApp();
     const server = http.createServer(app);
