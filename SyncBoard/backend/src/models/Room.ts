@@ -22,7 +22,7 @@ const roomSchema = new Schema<IRoom>(
     slug: { type: String, required: true, unique: true },
     adminId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     collaborators: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
-    elements: { type: [Schema.Types.Mixed], default: [] },
+    elements: { type: Schema.Types.Mixed, default: [] },
     version: { type: Number, default: 0 },
   },
   {
