@@ -21,7 +21,7 @@ interface LatencyRecord {
 
 async function runLoadTest() {
   console.log('===============================================================');
-  console.log('       SYNCBOARD WEBSOCKET LOAD-TEST SUITE                 ');
+  console.log('       SYNCBOARD WEBSOCKET LOAD-TEST           ');
   console.log('===============================================================');
   console.log(`[INIT] Target URL        : ${BACKEND_WS_URL}`);
   console.log(`[INIT] Concurrent Users  : ${CONCURRENT_USERS}`);
