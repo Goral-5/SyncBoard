@@ -34,6 +34,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.RoomInMemory = exports.RoomState = exports.RoomModel = exports.Room = void 0;
+exports.getRoomUserRole = getRoomUserRole;
 const mongoose_1 = __importStar(require("mongoose"));
 const roomSchema = new mongoose_1.Schema({
     slug: { type: String, required: true, unique: true },
@@ -44,8 +45,31 @@ const roomSchema = new mongoose_1.Schema({
 }, {
     timestamps: true,
 });
+roomSchema.index({ adminId: 1 });
 exports.Room = mongoose_1.default.model('Room', roomSchema);
 exports.RoomModel = exports.Room;
+// -------------------------------------------------------------
+// Quick permission helper:
+// Checks who is calling:
+// - Room owner (adminId) gets 'admin' rights (can edit, invite, delete room)
+// - Invited teammate (in collaborators array) gets 'editor' rights (can draw and modify)
+// - Anyone else returns null (access denied)
+// -------------------------------------------------------------
+function getRoomUserRole(room, userId) {
+    var _a;
+    if (!room || !userId)
+        return null;
+    const uid = userId.toString();
+    const adminId = (((_a = room.adminId) === null || _a === void 0 ? void 0 : _a._id) || room.adminId).toString();
+    if (adminId === uid)
+        return 'admin';
+    if (Array.isArray(room.collaborators)) {
+        const isCollab = room.collaborators.some((c) => ((c === null || c === void 0 ? void 0 : c._id) || c).toString() === uid);
+        if (isCollab)
+            return 'editor';
+    }
+    return null;
+}
 // ==========================================
 // 3. Server-Authoritative In-Memory RoomState Class
 // ==========================================

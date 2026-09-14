@@ -10,7 +10,7 @@ import multer from 'multer';
 import { v2 as cloudinary } from 'cloudinary';
 import { middleware } from './middleware';
 import { User } from '../models/User';
-import { Room } from '../models/Room';
+import { Room, getRoomUserRole } from '../models/Room';
 import { Chat } from '../models/Chat';
 import { Message } from '../models/Message';
 import nodemailer from 'nodemailer';
@@ -307,8 +307,6 @@ export function createExpressApp() {
         .populate('collaborators', 'name')
         .sort({ createdAt: -1 });
 
-      console.log(rooms);
-
       res.json({
         rooms
       });
@@ -337,8 +335,6 @@ export function createExpressApp() {
           message: 'User not found'
         });
       }
-
-      console.log(user);
 
       res.json({
         user
@@ -412,18 +408,146 @@ export function createExpressApp() {
   });
 
 
-  // ---------------------- GET ROOM DETAILS ----------------------
+  // -------------------------------------------------------------
+  // 1. GET ROOM SNAPSHOT (/room/:idOrSlug)
+  //
+  // INTERVIEW POINT:
+  // Why accept both ID and Slug?
+  // Frontend URLs can use human-friendly slugs (/canvas/sprint-planning)
+  // or direct database ObjectIds (/canvas/66d1234...).
+  // This endpoint resolves both cleanly without duplicate routes.
+  // -------------------------------------------------------------
+  app.get('/room/:idOrSlug', async (req: any, res) => {
+    const { idOrSlug } = req.params;
 
-  app.get('/room/:slug', async (req, res) => {
-    const slug = req.params.slug;
+    try {
+      const isValidObjectId = mongoose.Types.ObjectId.isValid(idOrSlug) && /^[0-9a-fA-F]{24}$/.test(idOrSlug);
 
-    const room = await Room.findOne({
-      slug
-    });
+      const query = isValidObjectId
+        ? { $or: [{ _id: idOrSlug }, { slug: idOrSlug }] }
+        : { slug: idOrSlug };
 
-    res.json({
-      room
-    });
+      const room = await Room.findOne(query)
+        .populate('adminId', 'name email photo')
+        .populate('collaborators', 'name email photo');
+
+      if (!room) {
+        return res.status(404).json({ message: 'Room not found' });
+      }
+
+      // Check user access if an auth token was supplied
+      let role: string | null = null;
+      let token = req.headers['authorization'];
+      if (token) {
+        if (token.startsWith('Bearer ')) token = token.slice(7).trim();
+        try {
+          const decoded = jwt.verify(token, JWT_SECRET) as { userId: string };
+          role = getRoomUserRole(room, decoded.userId);
+        } catch {
+          // Token was invalid or expired; role stays null
+        }
+      }
+
+      // MIGRATION SAFETY NET:
+      // Earlier versions saved canvas drawings as JSON strings inside the Chat collection.
+      // If this room has no elements yet, we check Chat for the newest snapshot,
+      // parse it, and copy it directly into room.elements. Zero data loss for existing users!
+      if (!room.elements || room.elements.length === 0) {
+        try {
+          const legacyChat = await Chat.findOne({ roomId: room._id }).sort({ createdAt: -1 });
+          if (legacyChat && legacyChat.message) {
+            const parsedElements = JSON.parse(legacyChat.message);
+            if (Array.isArray(parsedElements) && parsedElements.length > 0) {
+              room.elements = parsedElements;
+              room.version = 1;
+              await room.save();
+              console.log(`[Migration] Migrated ${parsedElements.length} elements from Chat into Room ${room._id}`);
+            }
+          }
+        } catch (migErr) {
+          console.error('[Migration] Failed to migrate legacy elements from Chat:', migErr);
+        }
+      }
+
+      res.json({
+        room,
+        role
+      });
+    } catch (e) {
+      console.error('Error fetching room:', e);
+      res.status(500).json({ message: 'Failed to fetch room' });
+    }
+  });
+
+
+  // ---------------------- DELETE ROOM ----------------------
+
+  app.delete('/room/:roomId', middleware, async (req: any, res) => {
+    const { roomId } = req.params;
+
+    try {
+      const isValidObjectId = mongoose.Types.ObjectId.isValid(roomId) && /^[0-9a-fA-F]{24}$/.test(roomId);
+      const query = isValidObjectId ? { $or: [{ _id: roomId }, { slug: roomId }] } : { slug: roomId };
+
+      const room = await Room.findOne(query);
+
+      if (!room) {
+        return res.status(404).json({ message: 'Room not found' });
+      }
+
+      // Only the admin / creator can delete the room
+      if (room.adminId.toString() !== req.userId) {
+        return res.status(403).json({ message: 'Only the room creator can delete this room' });
+      }
+
+      await Room.findByIdAndDelete(room._id);
+      await Chat.deleteMany({ roomId: room._id });
+      await Message.deleteMany({ roomId: room._id });
+
+      res.json({ message: 'Room deleted successfully' });
+    } catch (e) {
+      console.error('Failed to delete room:', e);
+      res.status(500).json({ message: 'Failed to delete room' });
+    }
+  });
+
+
+  // ---------------------- SAVE ROOM ELEMENTS (HTTP FALLBACK) ----------------------
+
+  app.put('/room/:roomId/elements', middleware, async (req: any, res) => {
+    const { roomId } = req.params;
+    const { elements } = req.body;
+
+    try {
+      const isValidObjectId = mongoose.Types.ObjectId.isValid(roomId) && /^[0-9a-fA-F]{24}$/.test(roomId);
+      const query = isValidObjectId ? { $or: [{ _id: roomId }, { slug: roomId }] } : { slug: roomId };
+
+      const room = await Room.findOne(query);
+
+      if (!room) {
+        return res.status(404).json({ message: 'Room not found' });
+      }
+
+      const role = getRoomUserRole(room, req.userId);
+      if (!role) {
+        return res.status(403).json({ message: 'You do not have write access to this room' });
+      }
+
+      if (Array.isArray(elements)) {
+        room.elements = elements;
+        room.version = (room.version || 0) + 1;
+        await room.save();
+      }
+
+      res.json({
+        success: true,
+        version: room.version,
+        updatedAt: room.updatedAt
+      });
+    } catch (e) {
+      console.error('Failed to save room elements:', e);
+      res.status(500).json({ message: 'Failed to save room elements' });
+    }
   });
 
 
@@ -558,18 +682,30 @@ export function createExpressApp() {
   );
 
 
-  // ---------------------- STORE CHAT ----------------------
+  // ---------------------- STORE CHAT (LEGACY DRAWING FALLBACK) ----------------------
 
   app.post(
     '/chats/:roomId',
     middleware,
     async (req: any, res) => {
-
       try {
-
         const roomId = req.params.roomId;
-
         const { message } = req.body;
+
+        // If message is a serialized JSON array of elements, also persist directly to Room!
+        try {
+          const parsed = JSON.parse(message);
+          if (Array.isArray(parsed)) {
+            const isValidObjectId = mongoose.Types.ObjectId.isValid(roomId) && /^[0-9a-fA-F]{24}$/.test(roomId);
+            const query = isValidObjectId ? { $or: [{ _id: roomId }, { slug: roomId }] } : { slug: roomId };
+            await Room.updateOne(query, {
+              $set: { elements: parsed },
+              $inc: { version: 1 }
+            });
+          }
+        } catch {
+          // Not a JSON elements array, standard message
+        }
 
         await Chat.create({
           roomId,
@@ -578,13 +714,10 @@ export function createExpressApp() {
         });
 
         res.status(200).json({
-          message: 'Drawing stored'
+          message: 'Drawing stored in room'
         });
-
       } catch (e) {
-
         console.error(e);
-
         res.status(500).json({
           message: 'Failed to store drawing'
         });

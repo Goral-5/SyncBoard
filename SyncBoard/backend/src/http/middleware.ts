@@ -8,7 +8,6 @@ dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
 const JWT_SECRET = process.env.JWT_SECRET as string;
-console.log("Jwt in middleare: ",JWT_SECRET);
 
 // Extend Express Request type to include userId
 declare global {
@@ -20,19 +19,21 @@ declare global {
 }
 
 export function middleware(req: Request, res: Response, next: NextFunction) {
-  const token = req.headers["authorization"];
+  let token = req.headers["authorization"];
 
   if (!token) {
     return res.status(401).json({ message: "Authorization token missing" });
   }
 
+  if (token.startsWith("Bearer ")) {
+    token = token.slice(7).trim();
+  }
+
   try {
     const decoded = jwt.verify(token, JWT_SECRET) as { userId: string };
     req.userId = decoded.userId;
-    console.log("User verified");
     next();
   } catch (err) {
-    console.error("JWT verification failed:", err);
     return res.status(403).json({ message: "Invalid or expired token" });
   }
 }

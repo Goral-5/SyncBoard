@@ -11,20 +11,20 @@ dotenv_1.default.config(); // Load JWT_SECRET from .env
 dotenv_1.default.config({ path: path_1.default.resolve(__dirname, '../../.env') });
 dotenv_1.default.config({ path: path_1.default.resolve(__dirname, '../../../.env') });
 const JWT_SECRET = process.env.JWT_SECRET;
-console.log("Jwt in middleare: ", JWT_SECRET);
 function middleware(req, res, next) {
-    const token = req.headers["authorization"];
+    let token = req.headers["authorization"];
     if (!token) {
         return res.status(401).json({ message: "Authorization token missing" });
+    }
+    if (token.startsWith("Bearer ")) {
+        token = token.slice(7).trim();
     }
     try {
         const decoded = jsonwebtoken_1.default.verify(token, JWT_SECRET);
         req.userId = decoded.userId;
-        console.log("User verified");
         next();
     }
     catch (err) {
-        console.error("JWT verification failed:", err);
         return res.status(403).json({ message: "Invalid or expired token" });
     }
 }

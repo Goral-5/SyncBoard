@@ -251,7 +251,6 @@ function createExpressApp() {
                 .populate('adminId', 'name')
                 .populate('collaborators', 'name')
                 .sort({ createdAt: -1 });
-            console.log(rooms);
             res.json({
                 rooms
             });
@@ -274,7 +273,6 @@ function createExpressApp() {
                     message: 'User not found'
                 });
             }
-            console.log(user);
             res.json({
                 user
             });
@@ -328,15 +326,127 @@ function createExpressApp() {
             });
         }
     }));
-    // ---------------------- GET ROOM DETAILS ----------------------
-    app.get('/room/:slug', (req, res) => __awaiter(this, void 0, void 0, function* () {
-        const slug = req.params.slug;
-        const room = yield Room_1.Room.findOne({
-            slug
-        });
-        res.json({
-            room
-        });
+    // -------------------------------------------------------------
+    // 1. GET ROOM SNAPSHOT (/room/:idOrSlug)
+    //
+    // INTERVIEW POINT:
+    // Why accept both ID and Slug?
+    // Frontend URLs can use human-friendly slugs (/canvas/sprint-planning)
+    // or direct database ObjectIds (/canvas/66d1234...).
+    // This endpoint resolves both cleanly without duplicate routes.
+    // -------------------------------------------------------------
+    app.get('/room/:idOrSlug', (req, res) => __awaiter(this, void 0, void 0, function* () {
+        const { idOrSlug } = req.params;
+        try {
+            const isValidObjectId = mongoose_1.default.Types.ObjectId.isValid(idOrSlug) && /^[0-9a-fA-F]{24}$/.test(idOrSlug);
+            const query = isValidObjectId
+                ? { $or: [{ _id: idOrSlug }, { slug: idOrSlug }] }
+                : { slug: idOrSlug };
+            const room = yield Room_1.Room.findOne(query)
+                .populate('adminId', 'name email photo')
+                .populate('collaborators', 'name email photo');
+            if (!room) {
+                return res.status(404).json({ message: 'Room not found' });
+            }
+            // Check user access if an auth token was supplied
+            let role = null;
+            let token = req.headers['authorization'];
+            if (token) {
+                if (token.startsWith('Bearer '))
+                    token = token.slice(7).trim();
+                try {
+                    const decoded = jsonwebtoken_1.default.verify(token, JWT_SECRET);
+                    role = (0, Room_1.getRoomUserRole)(room, decoded.userId);
+                }
+                catch (_a) {
+                    // Token was invalid or expired; role stays null
+                }
+            }
+            // MIGRATION SAFETY NET:
+            // Earlier versions saved canvas drawings as JSON strings inside the Chat collection.
+            // If this room has no elements yet, we check Chat for the newest snapshot,
+            // parse it, and copy it directly into room.elements. Zero data loss for existing users!
+            if (!room.elements || room.elements.length === 0) {
+                try {
+                    const legacyChat = yield Chat_1.Chat.findOne({ roomId: room._id }).sort({ createdAt: -1 });
+                    if (legacyChat && legacyChat.message) {
+                        const parsedElements = JSON.parse(legacyChat.message);
+                        if (Array.isArray(parsedElements) && parsedElements.length > 0) {
+                            room.elements = parsedElements;
+                            room.version = 1;
+                            yield room.save();
+                            console.log(`[Migration] Migrated ${parsedElements.length} elements from Chat into Room ${room._id}`);
+                        }
+                    }
+                }
+                catch (migErr) {
+                    console.error('[Migration] Failed to migrate legacy elements from Chat:', migErr);
+                }
+            }
+            res.json({
+                room,
+                role
+            });
+        }
+        catch (e) {
+            console.error('Error fetching room:', e);
+            res.status(500).json({ message: 'Failed to fetch room' });
+        }
+    }));
+    // ---------------------- DELETE ROOM ----------------------
+    app.delete('/room/:roomId', middleware_1.middleware, (req, res) => __awaiter(this, void 0, void 0, function* () {
+        const { roomId } = req.params;
+        try {
+            const isValidObjectId = mongoose_1.default.Types.ObjectId.isValid(roomId) && /^[0-9a-fA-F]{24}$/.test(roomId);
+            const query = isValidObjectId ? { $or: [{ _id: roomId }, { slug: roomId }] } : { slug: roomId };
+            const room = yield Room_1.Room.findOne(query);
+            if (!room) {
+                return res.status(404).json({ message: 'Room not found' });
+            }
+            // Only the admin / creator can delete the room
+            if (room.adminId.toString() !== req.userId) {
+                return res.status(403).json({ message: 'Only the room creator can delete this room' });
+            }
+            yield Room_1.Room.findByIdAndDelete(room._id);
+            yield Chat_1.Chat.deleteMany({ roomId: room._id });
+            yield Message_1.Message.deleteMany({ roomId: room._id });
+            res.json({ message: 'Room deleted successfully' });
+        }
+        catch (e) {
+            console.error('Failed to delete room:', e);
+            res.status(500).json({ message: 'Failed to delete room' });
+        }
+    }));
+    // ---------------------- SAVE ROOM ELEMENTS (HTTP FALLBACK) ----------------------
+    app.put('/room/:roomId/elements', middleware_1.middleware, (req, res) => __awaiter(this, void 0, void 0, function* () {
+        const { roomId } = req.params;
+        const { elements } = req.body;
+        try {
+            const isValidObjectId = mongoose_1.default.Types.ObjectId.isValid(roomId) && /^[0-9a-fA-F]{24}$/.test(roomId);
+            const query = isValidObjectId ? { $or: [{ _id: roomId }, { slug: roomId }] } : { slug: roomId };
+            const room = yield Room_1.Room.findOne(query);
+            if (!room) {
+                return res.status(404).json({ message: 'Room not found' });
+            }
+            const role = (0, Room_1.getRoomUserRole)(room, req.userId);
+            if (!role) {
+                return res.status(403).json({ message: 'You do not have write access to this room' });
+            }
+            if (Array.isArray(elements)) {
+                room.elements = elements;
+                room.version = (room.version || 0) + 1;
+                yield room.save();
+            }
+            res.json({
+                success: true,
+                version: room.version,
+                updatedAt: room.updatedAt
+            });
+        }
+        catch (e) {
+            console.error('Failed to save room elements:', e);
+            res.status(500).json({ message: 'Failed to save room elements' });
+        }
     }));
     // ---------------------- ADD COLLABORATOR TO ROOM ----------------------
     app.post('/rooms/:roomId/add-collaborator', middleware_1.middleware, (req, res) => __awaiter(this, void 0, void 0, function* () {
@@ -421,18 +531,33 @@ function createExpressApp() {
             });
         }
     }));
-    // ---------------------- STORE CHAT ----------------------
+    // ---------------------- STORE CHAT (LEGACY DRAWING FALLBACK) ----------------------
     app.post('/chats/:roomId', middleware_1.middleware, (req, res) => __awaiter(this, void 0, void 0, function* () {
         try {
             const roomId = req.params.roomId;
             const { message } = req.body;
+            // If message is a serialized JSON array of elements, also persist directly to Room!
+            try {
+                const parsed = JSON.parse(message);
+                if (Array.isArray(parsed)) {
+                    const isValidObjectId = mongoose_1.default.Types.ObjectId.isValid(roomId) && /^[0-9a-fA-F]{24}$/.test(roomId);
+                    const query = isValidObjectId ? { $or: [{ _id: roomId }, { slug: roomId }] } : { slug: roomId };
+                    yield Room_1.Room.updateOne(query, {
+                        $set: { elements: parsed },
+                        $inc: { version: 1 }
+                    });
+                }
+            }
+            catch (_a) {
+                // Not a JSON elements array, standard message
+            }
             yield Chat_1.Chat.create({
                 roomId,
                 userId: req.userId,
                 message
             });
             res.status(200).json({
-                message: 'Drawing stored'
+                message: 'Drawing stored in room'
             });
         }
         catch (e) {
