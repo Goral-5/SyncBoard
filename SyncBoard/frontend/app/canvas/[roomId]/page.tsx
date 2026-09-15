@@ -6,12 +6,11 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import '@excalidraw/excalidraw/index.css';
 import { RoomChat } from '@/components/RoomChat';
 import { useParams } from 'next/navigation';
-import { BACKEND_URL, WSS_URL } from '../../../config';
 import { ToastContainer, toast } from 'react-toastify';
 // @ts-expect-error react-toastify ships this stylesheet without TypeScript declarations.
 import 'react-toastify/dist/ReactToastify.css';
 import { mlService } from '@/lib/mlService';
-import { syncImagesToCloudinary, restoreImagesFromElements, uploadImageToCloudinary } from '@/lib/imageService';
+import { useCanvasSync } from '@/hooks/useCanvasSync';
 
 // HuggingFace Space root — pinged on load to wake the container
 const HF_SPACE_ROOT = 'https://sanprakhar362-paddleocr.hf.space/';
@@ -29,179 +28,133 @@ const ElementsNavigator = dynamic(
   { ssr: false }
 );
 
-interface CursorPosition {
-  x: number; y: number; clientId: string; color: string; username: string;
-}
-
 export default function CanvasPage() {
-  const { roomId } = useParams();
+  const params = useParams();
+  const rawRoomId = params?.roomId;
+  const roomId = Array.isArray(rawRoomId) ? rawRoomId[0] : (rawRoomId as string) || '';
 
-  const wsRef = useRef<WebSocket | null>(null);
   const excalidrawAPIRef = useRef<any>(null);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const clientId = useRef<string>(Math.random().toString(36).slice(2));
-  const userColor = useRef<string>(getRandomColor());
-  const username = useRef<string>('');
-  const sendElementsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const uploadedImageIds = useRef<Set<string>>(new Set());
-  const imageSyncTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [excalidrawAPI, setExcalidrawAPI] = useState<any>(null);
 
-  const [remoteCursors, setRemoteCursors] = useState<Record<string, CursorPosition>>({});
-  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [currentUsername, setCurrentUsername] = useState<string>('Collaborator');
+
   const [showShare, setShowShare] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
-  const [excalidrawAPI, setExcalidrawAPI] = useState<any>(null);
   const [showAIModal, setShowAIModal] = useState(false);
   const [aiPrompt, setAiPrompt] = useState('');
   const [aiLoading, setAiLoading] = useState(false);
 
-  // ── 1. JWT decode ──────────────────────────────────────────────────────
+  // AppState track for screen projection of remote cursors
+  const [canvasTransform, setCanvasTransform] = useState<{ scrollX: number; scrollY: number; zoom: number }>({
+    scrollX: 0,
+    scrollY: 0,
+    zoom: 1,
+  });
+
+  // ── 1. JWT decode for user identity ────────────────────────────────────────
   useEffect(() => {
-    const token = localStorage.getItem('token');
+    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
     if (!token) return;
     try {
-      const payload = JSON.parse(window.atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
-      setCurrentUserId(payload.userId);
-      username.current = payload.name || 'Anonymous User';
-    } catch (e) { console.error('Token decode error', e); }
+      const payload = JSON.parse(
+        window.atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))
+      );
+      setCurrentUserId(payload.userId || payload.id);
+      setCurrentUsername(payload.name || payload.username || 'Collaborator');
+    } catch (e) {
+      console.error('[Canvas] Token decode error:', e);
+    }
   }, []);
 
-  // ── 2. Warm-up: ML backend health + HF Space ping ─────────────────────
+  // ── 2. Warm-up: ML backend health + HF Space ping ───────────────────────────
   useEffect(() => {
-    mlService.checkHealth()
-      .then(ok => { if (ok) toast.success('🤖 ML Backend Connected', { autoClose: 2000 }); })
-      .catch(() => { });
+    mlService
+      .checkHealth()
+      .then((ok) => {
+        if (ok) toast.success('🤖 ML Backend Connected', { autoClose: 2000 });
+      })
+      .catch(() => {});
 
     // Fire-and-forget — wakes the HF container so first Text request is fast
-    fetch(HF_SPACE_ROOT, { method: 'GET', mode: 'no-cors' }).catch(() => { });
+    fetch(HF_SPACE_ROOT, { method: 'GET', mode: 'no-cors' }).catch(() => {});
   }, []);
 
-  // ── 3. Load drawing history + restore Cloudinary images ───────────────
-  useEffect(() => {
-    if (!roomId) return;
-    fetch(`${BACKEND_URL}/chats/${roomId}`)
-      .then(r => r.json())
-      .then(async data => {
-        if (!data.messages || data.messages.length === 0) return;
+  // ── 3. Member 2 Real-Time Collaboration Hook ───────────────────────────────
+  const {
+    connectionStatus,
+    collaborators,
+    remoteCursors,
+    boardRevision,
+    isLoadingRoom,
+    ws,
+    handleCanvasChange,
+    handlePointerUpdate,
+    handlePointerDown,
+    handlePointerUp,
+    reconcileAndApplyIncoming,
+  } = useCanvasSync({
+    roomId,
+    excalidrawAPI,
+    currentUserId,
+    currentUsername,
+  });
 
-        // The messages are sorted newest first, so index 0 is the latest save!
-        const latestMsg = data.messages[0];
-        let latestElements: any[] = [];
-        try {
-          latestElements = JSON.parse(latestMsg.message);
-        } catch (e) {
-          console.error("Failed to parse latest message elements", e);
-        }
+  // ── 4. Unified Canvas Change Handler ────────────────────────────────────────
+  const onExcalidrawChange = useCallback(
+    (elements: readonly any[], appState: any) => {
+      // Keep viewport transform updated for projecting remote cursors
+      if (appState) {
+        setCanvasTransform({
+          scrollX: appState.scrollX ?? 0,
+          scrollY: appState.scrollY ?? 0,
+          zoom: appState.zoom?.value ?? 1,
+        });
+      }
 
-        const apply = async () => {
-          if (!excalidrawAPIRef.current) { setTimeout(apply, 500); return; }
+      // Delegate differential synchronization to hook
+      handleCanvasChange(elements, appState);
+    },
+    [handleCanvasChange]
+  );
 
-          // Pre-populate the files map from the elements' Cloudinary URLs
-          const imageElements = latestElements.filter(
-            (el: any) => el.type === 'image' && el.fileId && el.cloudinaryUrl
-          );
-          const filesRecord: Record<string, any> = {};
-          imageElements.forEach((el: any) => {
-            filesRecord[el.fileId] = {
-              id: el.fileId,
-              dataURL: el.cloudinaryUrl,
-              mimeType: el.mimeType || 'image/png',
-              created: Date.now(),
-            };
-          });
+  // ── 5. Unified Pointer Update Handler ───────────────────────────────────────
+  const onPointerUpdate = useCallback(
+    (payload: any) => {
+      if (!payload?.pointer) return;
+      const appState = excalidrawAPIRef.current?.getAppState();
+      const selectedIds = appState?.selectedElementIds
+        ? Object.keys(appState.selectedElementIds)[0]
+        : null;
+      handlePointerUpdate(payload, selectedIds);
+    },
+    [handlePointerUpdate]
+  );
 
-          // Atomically update elements and files in the scene state
-          excalidrawAPIRef.current.updateScene({
-            elements: latestElements,
-            files: filesRecord,
-          });
-
-          await restoreImagesFromElements(excalidrawAPIRef.current, latestElements);
-        };
-        apply();
-      });
-  }, [roomId]);
-
-  // ── 4. WebSocket lifecycle ─────────────────────────────────────────────
-  useEffect(() => {
-    const token = localStorage.getItem('token');
-    if (!token || !roomId) return;
-
-    const connect = () => {
-      if (wsRef.current?.readyState === WebSocket.CONNECTING ||
-        wsRef.current?.readyState === WebSocket.OPEN) return;
-
-      const ws = new WebSocket(`${WSS_URL}?token=${token}`);
-      wsRef.current = ws;
-      ws.onopen = () => ws.send(JSON.stringify({ type: 'join_room', roomId }));
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          if (data.type === 'drawing' && data.clientId !== clientId.current && excalidrawAPIRef.current) {
-            excalidrawAPIRef.current.updateScene({
-              elements: mergeElements(excalidrawAPIRef.current.getSceneElements(), data.elements),
-            });
-          }
-          if (data.type === 'cursor' && data.clientId !== clientId.current) {
-            setRemoteCursors(prev => ({
-              ...prev,
-              [data.clientId]: { x: data.pointer.x, y: data.pointer.y, clientId: data.clientId, color: data.color || '#000000', username: data.username },
-            }));
-          }
-        } catch { }
-      };
-      ws.onclose = (e) => { if (!e.wasClean) reconnectTimeoutRef.current = setTimeout(connect, 3000); };
-    };
-
-    connect();
-    return () => {
-      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
-      wsRef.current?.close(1000, 'Unmounted');
-    };
-  }, [roomId]);
-
-  // ── 5. onChange: WS broadcast + debounced Cloudinary image sync ────────
-  const handleChange = useCallback((elements: readonly any[]) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      if (sendElementsTimer.current) clearTimeout(sendElementsTimer.current);
-      sendElementsTimer.current = setTimeout(() => {
-        wsRef.current?.send(JSON.stringify({ type: 'drawing', roomId, elements, clientId: clientId.current }));
-      }, 100);
-    }
-
-    const token = localStorage.getItem('token');
-    if (token && excalidrawAPIRef.current) {
-      if (imageSyncTimer.current) clearTimeout(imageSyncTimer.current);
-      imageSyncTimer.current = setTimeout(() => {
-        syncImagesToCloudinary(excalidrawAPIRef.current, token, uploadedImageIds.current)
-          .catch(err => console.error('Image sync error:', err));
-      }, 2000);
-    }
-  }, [roomId]);
-
-  const handlePointerUpdate = (payload: any) => {
-    if (wsRef.current?.readyState !== WebSocket.OPEN) return;
-    wsRef.current.send(JSON.stringify({
-      type: 'cursor', clientId: clientId.current, roomId,
-      pointer: payload.pointer, color: userColor.current, username: username.current,
-    }));
-  };
-
-  // ── 6. AI Magic ────────────────────────────────────────────────────────
+  // ── 6. AI Magic Generation ──────────────────────────────────────────────────
   const generateFromAI = async () => {
     if (!aiPrompt.trim() || !excalidrawAPIRef.current) return;
     setAiLoading(true);
     try {
+      const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
+      if (!apiKey) {
+        toast.error('Gemini API key is not configured.');
+        setAiLoading(false);
+        return;
+      }
+
       const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${process.env.NEXT_PUBLIC_GEMINI_API_KEY}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            contents: [{
-              role: 'user', parts: [{
-                text: `Act as an Excalidraw Architect. Transform the following description into a valid JSON array of ExcalidrawElementSkeleton objects. OUTPUT ONLY RAW JSON — no markdown, no explanation.
+            contents: [
+              {
+                role: 'user',
+                parts: [
+                  {
+                    text: `Act as an Excalidraw Architect. Transform the following description into a valid JSON array of ExcalidrawElementSkeleton objects. OUTPUT ONLY RAW JSON — no markdown, no explanation.
 
 Rules:
 - Use convertToExcalidrawElements Skeleton API format
@@ -211,128 +164,190 @@ Rules:
 - For arrows: set x/y to match the start element, use start/end id bindings
 - Use professional muted colors (#a5d8ff info, #c0eb75 success, #ffc9c9 error)
 
-User Request: ${aiPrompt}`
-              }]
-            }],
+User Request: ${aiPrompt}`,
+                  },
+                ],
+              },
+            ],
           }),
         }
       );
+
       const data = await res.json();
       const aiText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
       if (!aiText) throw new Error('Empty AI response');
       const jsonMatch = aiText.match(/\[[\s\S]*\]/);
       if (!jsonMatch) throw new Error('Invalid AI Response');
       const parsedJson = JSON.parse(jsonMatch[0]);
+
       const fixedJson = parsedJson.map((el: any) => {
         if (el.type === 'arrow' && el.start?.id && el.end?.id) {
           const src = parsedJson.find((s: any) => s.id === el.start.id);
           const tgt = parsedJson.find((t: any) => t.id === el.end.id);
-          if (src && tgt) return { ...el, x: src.x + (src.width || 100) / 2, y: src.y + (src.height || 50) / 2, points: [[0, 0], [tgt.x - src.x, tgt.y - src.y]] };
+          if (src && tgt) {
+            return {
+              ...el,
+              x: src.x + (src.width || 100) / 2,
+              y: src.y + (src.height || 50) / 2,
+              points: [
+                [0, 0],
+                [tgt.x - src.x, tgt.y - src.y],
+              ],
+            };
+          }
         }
         return el;
       });
-      console.log("AI response: ", fixedJson);
+
       const { convertToExcalidrawElements } = await import('@excalidraw/excalidraw');
       const aiElements = convertToExcalidrawElements(fixedJson, { regenerateIds: false });
-      excalidrawAPIRef.current.updateScene({
-        elements: mergeElements(excalidrawAPIRef.current.getSceneElements(), aiElements),
-      });
+
+      // Apply newly generated elements with reconciliation
+      reconcileAndApplyIncoming(aiElements);
+
       setShowAIModal(false);
       setAiPrompt('');
-    } catch { alert('AI Generation Failed'); }
-    finally { setAiLoading(false); }
-  };
-
-  // ── 7. Save — embeds Cloudinary URLs into image elements ──────────────
-  const handleSaveToServer = async () => {
-    const token = localStorage.getItem('token');
-    const elements = excalidrawAPIRef.current?.getSceneElements();
-    if (!token || !elements || !roomId) return;
-    setSaveStatus('saving');
-    try {
-      const files = excalidrawAPIRef.current?.getFiles() ?? {};
-
-      // Perform uploads for any base64 images in the scene first in parallel
-      const enriched = await Promise.all(elements.map(async (el: any) => {
-        if (el.type === 'image' && el.fileId) {
-          const f = files[el.fileId];
-          if (f) {
-            if (f.dataURL?.startsWith('http')) {
-              return { ...el, cloudinaryUrl: f.dataURL, mimeType: f.mimeType };
-            } else if (f.dataURL?.startsWith('data:')) {
-              try {
-                console.log(`[Save] Uploading image ${el.fileId} to Cloudinary...`);
-                const result = await uploadImageToCloudinary(f.dataURL, token);
-                if (result.success) {
-                  // Add it to Excalidraw files
-                  excalidrawAPIRef.current.addFiles([{
-                    id: el.fileId,
-                    dataURL: result.url,
-                    mimeType: f.mimeType,
-                    created: Date.now(),
-                  }]);
-                  uploadedImageIds.current.add(el.fileId);
-                  console.log(`[Save] ✅ Image ${el.fileId} successfully uploaded -> ${result.url}`);
-                  return { ...el, cloudinaryUrl: result.url, mimeType: f.mimeType };
-                }
-              } catch (err) {
-                console.error(`[Save] Failed to upload image ${el.fileId}:`, err);
-              }
-            }
-          }
-          // If no file found in files map, check if the element already has a cloudinaryUrl
-          if (el.cloudinaryUrl) {
-            return el;
-          }
-        }
-        return el;
-      }));
-
-      const res = await fetch(`${BACKEND_URL}/chats/${roomId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: token },
-        body: JSON.stringify({ message: JSON.stringify(enriched) }),
-      });
-      if (res.ok) { setSaveStatus('saved'); setTimeout(() => setSaveStatus('idle'), 1500); }
-    } catch (e) {
-      console.error("Save error:", e);
-      setSaveStatus('idle');
+      toast.success('✨ Elements generated successfully!');
+    } catch (err) {
+      console.error('[AI] Generation failed:', err);
+      toast.error('AI Generation Failed. Please try again.');
+    } finally {
+      setAiLoading(false);
     }
   };
 
-  const handleShare = () => { setShowShare(true); setCopied(false); };
+  const handleShare = () => {
+    setShowShare(true);
+    setCopied(false);
+  };
+
   const handleCopyLink = () => {
     navigator.clipboard.writeText(window.location.href);
     setCopied(true);
-    setTimeout(() => setShowShare(false), 1000);
+    setTimeout(() => setShowShare(false), 1200);
   };
 
-  // ── Render ─────────────────────────────────────────────────────────────
   return (
-    <div className="fixed inset-0 overflow-hidden bg-[#f0f0f0]">
+    <div
+      className="fixed inset-0 overflow-hidden bg-[#f0f0f0]"
+      onPointerDown={handlePointerDown}
+      onPointerUp={handlePointerUp}
+    >
+      {/* Top Presence & Status Header Bar */}
+      <div className="fixed top-3 left-3 z-50 flex items-center gap-2 bg-white/90 backdrop-blur-md px-3 py-1.5 rounded-xl shadow-md border border-slate-200">
+        <div className="flex items-center gap-1.5">
+          <span
+            className={`h-2.5 w-2.5 rounded-full ${
+              connectionStatus === 'connected'
+                ? 'bg-emerald-500 animate-pulse'
+                : connectionStatus === 'reconnecting'
+                ? 'bg-amber-500 animate-ping'
+                : 'bg-rose-500'
+            }`}
+          />
+          <span className="text-xs font-semibold text-slate-700 capitalize">
+            {connectionStatus}
+          </span>
+        </div>
+
+        <div className="h-3.5 w-px bg-slate-200" />
+
+        <div className="flex items-center gap-1">
+          <span className="text-xs text-slate-500">Rev:</span>
+          <span className="text-xs font-mono font-bold text-slate-700">{boardRevision}</span>
+        </div>
+
+        {collaborators.length > 0 && (
+          <>
+            <div className="h-3.5 w-px bg-slate-200" />
+            <div className="flex items-center gap-1 text-xs text-slate-600 font-medium">
+              <span>👥 {collaborators.length + 1} online</span>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Main Excalidraw Canvas */}
       <Excalidraw
-        excalidrawAPI={(api) => { excalidrawAPIRef.current = api; setExcalidrawAPI(api); }}
+        excalidrawAPI={(api) => {
+          excalidrawAPIRef.current = api;
+          setExcalidrawAPI(api);
+        }}
         theme="light"
-        onChange={handleChange}
-        onPointerUpdate={handlePointerUpdate}
-        UIOptions={{ canvasActions: { loadScene: true, export: { saveFileToDisk: true }, saveAsImage: true } }}
+        onChange={onExcalidrawChange}
+        onPointerUpdate={onPointerUpdate}
+        UIOptions={{
+          canvasActions: {
+            loadScene: true,
+            export: { saveFileToDisk: true },
+            saveAsImage: true,
+          },
+        }}
       />
 
-      {/* Bottom bar */}
+      {/* Loading Overlay */}
+      {isLoadingRoom && (
+        <div className="fixed inset-0 z-30 pointer-events-none flex items-center justify-center bg-white/40 backdrop-blur-[2px]">
+          <div className="bg-white/95 px-4 py-2 rounded-xl shadow-lg border border-slate-200 text-xs font-semibold text-slate-700 flex items-center gap-2">
+            <span className="h-2 w-2 rounded-full bg-blue-600 animate-ping" />
+            Syncing room state...
+          </div>
+        </div>
+      )}
+
+      {/* High-Performance Remote Cursors Overlay (Projected World-to-Screen) */}
+      <div className="absolute inset-0 pointer-events-none z-40 overflow-hidden">
+        {Object.values(remoteCursors).map((cursor) => {
+          const screenX = (cursor.x + canvasTransform.scrollX) * canvasTransform.zoom;
+          const screenY = (cursor.y + canvasTransform.scrollY) * canvasTransform.zoom;
+
+          return (
+            <div
+              key={cursor.clientId}
+              className="absolute pointer-events-none will-change-transform"
+              style={{
+                transform: `translate3d(${screenX}px, ${screenY}px, 0)`,
+                transition: 'transform 0.05s linear',
+              }}
+            >
+              <div className="relative">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                  <path
+                    d="M5.65376 12.3673H5.46026L5.31717 12.4976L0.500002 16.8829L0.500002 1.19841L11.7841 12.3673H5.65376Z"
+                    fill={cursor.color}
+                    stroke="white"
+                    strokeWidth="2"
+                  />
+                </svg>
+                <div
+                  className="absolute left-4 top-3 whitespace-nowrap px-2 py-0.5 rounded shadow text-[10px] font-bold text-white tracking-wide select-none"
+                  style={{ backgroundColor: cursor.color }}
+                >
+                  {cursor.username}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Bottom Floating Control Bar */}
       <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 bg-white/90 backdrop-blur-md px-4 py-2 rounded-xl shadow-lg border border-slate-200">
-        <button onClick={() => setShowAIModal(true)} className="px-4 py-1.5 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:opacity-90 transition shadow-sm">
+        <button
+          onClick={() => setShowAIModal(true)}
+          className="px-4 py-1.5 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:opacity-90 transition shadow-sm"
+        >
           AI Magic ✨
         </button>
+
+        <div className="flex items-center gap-1 text-xs text-slate-500 font-medium px-2 py-1 bg-slate-100 rounded-md">
+          <span>⚡ Auto-sync active</span>
+        </div>
+
         <button
-          onClick={handleSaveToServer}
-          disabled={saveStatus === 'saving'}
-          className={`text-sm font-semibold rounded-lg px-4 py-1.5 shadow transition-all duration-200
-            ${saveStatus === 'saved' ? 'bg-yellow-300 text-slate-800' : 'bg-blue-600 text-white'}
-            ${saveStatus === 'saving' ? 'opacity-60 cursor-not-allowed' : 'hover:bg-blue-700'}`}
+          onClick={handleShare}
+          className="text-sm font-semibold text-blue-600 border border-blue-600 rounded-lg px-4 py-1.5 bg-white hover:bg-blue-50 transition-all shadow-sm"
         >
-          {saveStatus === 'saved' ? 'Saved!' : 'Save'}
-        </button>
-        <button onClick={handleShare} className="text-sm font-semibold text-blue-600 border border-blue-600 rounded-lg px-4 py-1.5 bg-white hover:bg-blue-50 transition-all shadow-sm">
           Share
         </button>
       </div>
@@ -342,15 +357,28 @@ User Request: ${aiPrompt}`
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100]">
           <div className="bg-white p-6 rounded-2xl w-[450px] shadow-2xl">
             <h3 className="text-lg font-bold mb-3 text-gray-800">Generate with SyncBoard AI</h3>
-            <h5 className="text-sm mb-3 text-gray-800">Write a detailed prompt of what you wish our AI to bring the best results for you !</h5>
+            <h5 className="text-sm mb-3 text-gray-600">
+              Describe the diagram, workflow, or system architecture you want to construct:
+            </h5>
             <textarea
-              autoFocus value={aiPrompt} onChange={e => setAiPrompt(e.target.value)}
-              className="w-full border-2 border-gray-100 p-3 rounded-xl focus:border-blue-500 outline-none transition h-32 text-sm"
-              placeholder="e.g. A system architecture with a load balancer, two servers and a database..."
+              autoFocus
+              value={aiPrompt}
+              onChange={(e) => setAiPrompt(e.target.value)}
+              className="w-full border-2 border-gray-100 p-3 rounded-xl focus:border-blue-500 outline-none transition h-32 text-sm text-slate-800"
+              placeholder="e.g. A microservices architecture with an API gateway, auth service, database, and message queue..."
             />
             <div className="flex justify-end gap-3 mt-4">
-              <button onClick={() => setShowAIModal(false)} className="px-4 py-2 text-sm text-gray-500 hover:bg-gray-100 rounded-lg">Cancel</button>
-              <button disabled={aiLoading} onClick={generateFromAI} className="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm font-semibold disabled:bg-blue-300 transition">
+              <button
+                onClick={() => setShowAIModal(false)}
+                className="px-4 py-2 text-sm text-gray-500 hover:bg-gray-100 rounded-lg"
+              >
+                Cancel
+              </button>
+              <button
+                disabled={aiLoading}
+                onClick={generateFromAI}
+                className="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm font-semibold disabled:bg-blue-300 transition"
+              >
                 {aiLoading ? 'Thinking...' : 'Generate'}
               </button>
             </div>
@@ -363,55 +391,47 @@ User Request: ${aiPrompt}`
         <div className="absolute bottom-20 left-1/2 -translate-x-1/2 bg-white border border-slate-200 rounded-lg shadow-xl p-4 w-72 z-50">
           <div className="flex justify-between items-center mb-2 text-sm font-semibold text-blue-600">
             <span>Share Link</span>
-            <button onClick={() => setShowShare(false)} className="text-blue-600 text-xl font-semibold">×</button>
+            <button
+              onClick={() => setShowShare(false)}
+              className="text-blue-600 text-xl font-semibold leading-none"
+            >
+              ×
+            </button>
           </div>
           <div className="flex gap-2">
-            <input readOnly value={typeof window !== 'undefined' ? window.location.href : ''} className="flex-1 text-black text-xs px-2 py-1.5 rounded border bg-slate-50" />
-            <button onClick={handleCopyLink} className={`text-xs px-3 py-1.5 rounded font-medium text-white ${copied ? 'bg-green-500' : 'bg-blue-600'}`}>
+            <input
+              readOnly
+              value={typeof window !== 'undefined' ? window.location.href : ''}
+              className="flex-1 text-black text-xs px-2 py-1.5 rounded border bg-slate-50"
+            />
+            <button
+              onClick={handleCopyLink}
+              className={`text-xs px-3 py-1.5 rounded font-medium text-white transition ${
+                copied ? 'bg-green-500' : 'bg-blue-600'
+              }`}
+            >
               {copied ? 'Copied' : 'Copy'}
             </button>
           </div>
         </div>
       )}
 
-      {/* Cursor Overlay */}
-      <div className="absolute inset-0 pointer-events-none z-40">
-        {Object.values(remoteCursors).map((cursor) => (
-          <div key={cursor.clientId} className="absolute transition-all duration-100 ease-out" style={{ left: cursor.x, top: cursor.y }}>
-            <div className="relative">
-              <div className="absolute left-4 top-4 whitespace-nowrap px-2 py-1 rounded shadow-md text-[11px] font-bold text-white" style={{ backgroundColor: cursor.color }}>
-                {cursor.username}
-              </div>
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-                <path d="M5.65376 12.3673H5.46026L5.31717 12.4976L0.500002 16.8829L0.500002 1.19841L11.7841 12.3673H5.65376Z" fill={cursor.color} stroke="white" strokeWidth="2" />
-              </svg>
-            </div>
-          </div>
-        ))}
-      </div>
+      {/* Text Chat Integration */}
+      <RoomChat roomId={roomId} ws={ws} currentUserId={currentUserId} />
 
-      <RoomChat roomId={roomId} ws={wsRef.current} currentUserId={currentUserId} />
+      {/* Machine Learning & Toolbar Extensions */}
       {excalidrawAPI && <MLToolbar excalidrawAPI={excalidrawAPI} />}
       {excalidrawAPI && <ElementsNavigator excalidrawAPI={excalidrawAPI} />}
 
-      <ToastContainer position="top-right" autoClose={3000} hideProgressBar={false} newestOnTop closeOnClick pauseOnHover theme="light" />
+      <ToastContainer
+        position="top-right"
+        autoClose={3000}
+        hideProgressBar={false}
+        newestOnTop
+        closeOnClick
+        pauseOnHover
+        theme="light"
+      />
     </div>
   );
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function mergeElements(existing: readonly any[], incoming: any[]): any[] {
-  const map = new Map<string, any>();
-  existing.forEach(el => map.set(el.id, el));
-  incoming.forEach(el => {
-    const prev = map.get(el.id);
-    if (!prev || el.version > prev.version) map.set(el.id, el);
-  });
-  return Array.from(map.values()).filter(el => !el.isDeleted);
-}
-
-function getRandomColor(): string {
-  const colors = ['#FF4C4C', '#4CFF4C', '#4C4CFF', '#FFAA00', '#00CFFF', '#FF00DD', '#7C3AED'];
-  return colors[Math.floor(Math.random() * colors.length)];
 }
