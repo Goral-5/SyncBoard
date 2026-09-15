@@ -32,13 +32,42 @@ var __importStar = (this && this.__importStar) || (function () {
         return result;
     };
 })();
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.Room = void 0;
+exports.checkRoomPermission = checkRoomPermission;
 const mongoose_1 = __importStar(require("mongoose"));
 const roomSchema = new mongoose_1.Schema({
     slug: { type: String, required: true, unique: true },
     adminId: { type: mongoose_1.default.Schema.Types.ObjectId, ref: 'User', required: true },
-    collaborators: [{ type: mongoose_1.default.Schema.Types.ObjectId, ref: 'User' }], // NEW
-    createdAt: { type: Date, default: Date.now },
-});
+    collaborators: [{ type: mongoose_1.default.Schema.Types.ObjectId, ref: 'User' }],
+    elements: [{ type: mongoose_1.Schema.Types.Mixed }],
+    version: { type: Number, default: 0 },
+}, { timestamps: true });
 exports.Room = mongoose_1.default.model('Room', roomSchema);
+function checkRoomPermission(userId, roomIdOrSlug) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const isObjectId = mongoose_1.default.Types.ObjectId.isValid(roomIdOrSlug) && /^[0-9a-fA-F]{24}$/.test(roomIdOrSlug);
+        const room = yield exports.Room.findOne(isObjectId ? { $or: [{ _id: roomIdOrSlug }, { slug: roomIdOrSlug }] } : { slug: roomIdOrSlug });
+        if (!room) {
+            return { allowed: false, role: null, room: null };
+        }
+        const userIdStr = userId.toString();
+        if (room.adminId.toString() === userIdStr) {
+            return { allowed: true, role: 'admin', room };
+        }
+        const isCollaborator = room.collaborators.some((c) => c.toString() === userIdStr);
+        if (isCollaborator) {
+            return { allowed: true, role: 'editor', room };
+        }
+        return { allowed: false, role: null, room };
+    });
+}

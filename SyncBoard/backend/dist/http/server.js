@@ -27,6 +27,7 @@ const User_1 = require("../models/User");
 const Room_1 = require("../models/Room");
 const Chat_1 = require("../models/Chat");
 const Message_1 = require("../models/Message");
+const roomManager_1 = require("../ws/roomManager");
 const nodemailer_1 = __importDefault(require("nodemailer"));
 const path_1 = __importDefault(require("path"));
 dotenv_1.default.config();
@@ -328,14 +329,57 @@ function createExpressApp() {
         }
     }));
     // ---------------------- GET ROOM DETAILS ----------------------
-    app.get('/room/:slug', (req, res) => __awaiter(this, void 0, void 0, function* () {
-        const slug = req.params.slug;
-        const room = yield Room_1.Room.findOne({
-            slug
-        });
-        res.json({
-            room
-        });
+    app.get('/room/:idOrSlug', (req, res) => __awaiter(this, void 0, void 0, function* () {
+        const idOrSlug = req.params.idOrSlug;
+        try {
+            const isObjectId = mongoose_1.default.Types.ObjectId.isValid(idOrSlug) && /^[0-9a-fA-F]{24}$/.test(idOrSlug);
+            const room = yield Room_1.Room.findOne(isObjectId ? { $or: [{ _id: idOrSlug }, { slug: idOrSlug }] } : { slug: idOrSlug })
+                .populate('adminId', 'name photo email')
+                .populate('collaborators', 'name photo email');
+            if (!room) {
+                return res.status(404).json({ message: 'Room not found' });
+            }
+            const roomIdStr = room._id.toString();
+            const memoryState = roomManager_1.roomManager.getRoom(roomIdStr);
+            let elements = memoryState ? memoryState.getElementsArray() : (room.elements || []);
+            let version = memoryState ? memoryState.version : (room.version || 0);
+            // Legacy migration fallback: if room elements are empty, check legacy Chat collection
+            if ((!elements || elements.length === 0) && (!memoryState || memoryState.elements.size === 0)) {
+                try {
+                    const legacyChat = yield Chat_1.Chat.findOne({ roomId: roomIdStr }).sort({ createdAt: -1 });
+                    if (legacyChat && legacyChat.message) {
+                        const parsed = JSON.parse(legacyChat.message);
+                        if (Array.isArray(parsed) && parsed.length > 0) {
+                            elements = parsed;
+                            version = 1;
+                            yield Room_1.Room.findByIdAndUpdate(roomIdStr, {
+                                $set: { elements, version }
+                            });
+                            console.log(`📦 Migrated ${elements.length} legacy elements into Room ${roomIdStr}`);
+                        }
+                    }
+                }
+                catch (migErr) {
+                    console.warn('Legacy element migration check failed:', migErr);
+                }
+            }
+            res.json({
+                room: {
+                    _id: room._id,
+                    slug: room.slug,
+                    adminId: room.adminId,
+                    collaborators: room.collaborators,
+                    elements,
+                    version,
+                    createdAt: room.createdAt,
+                    updatedAt: room.updatedAt,
+                }
+            });
+        }
+        catch (err) {
+            console.error('Failed to get room:', err);
+            res.status(500).json({ message: 'Error fetching room' });
+        }
     }));
     // ---------------------- ADD COLLABORATOR TO ROOM ----------------------
     app.post('/rooms/:roomId/add-collaborator', middleware_1.middleware, (req, res) => __awaiter(this, void 0, void 0, function* () {

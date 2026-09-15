@@ -20,16 +20,17 @@ declare global {
 }
 
 export function middleware(req: Request, res: Response, next: NextFunction) {
-  const token = req.headers["authorization"];
+  const rawToken = req.headers["authorization"];
 
-  if (!token) {
+  if (!rawToken) {
     return res.status(401).json({ message: "Authorization token missing" });
   }
+
+  const token = rawToken.startsWith("Bearer ") ? rawToken.slice(7) : rawToken;
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET) as { userId: string };
     req.userId = decoded.userId;
-    console.log("User verified");
     next();
   } catch (err) {
     console.error("JWT verification failed:", err);

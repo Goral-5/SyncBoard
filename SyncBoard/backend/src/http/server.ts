@@ -13,6 +13,7 @@ import { User } from '../models/User';
 import { Room } from '../models/Room';
 import { Chat } from '../models/Chat';
 import { Message } from '../models/Message';
+import { roomManager } from '../ws/roomManager';
 import nodemailer from 'nodemailer';
 
 import path from 'path';
@@ -412,16 +413,62 @@ export function createExpressApp() {
 
   // ---------------------- GET ROOM DETAILS ----------------------
 
-  app.get('/room/:slug', async (req, res) => {
-    const slug = req.params.slug;
+  app.get('/room/:idOrSlug', async (req, res) => {
+    const idOrSlug = req.params.idOrSlug;
 
-    const room = await Room.findOne({
-      slug
-    });
+    try {
+      const isObjectId = mongoose.Types.ObjectId.isValid(idOrSlug) && /^[0-9a-fA-F]{24}$/.test(idOrSlug);
+      const room = await Room.findOne(
+        isObjectId ? { $or: [{ _id: idOrSlug }, { slug: idOrSlug }] } : { slug: idOrSlug }
+      )
+        .populate('adminId', 'name photo email')
+        .populate('collaborators', 'name photo email');
 
-    res.json({
-      room
-    });
+      if (!room) {
+        return res.status(404).json({ message: 'Room not found' });
+      }
+
+      const roomIdStr = (room._id as any).toString();
+      const memoryState = roomManager.getRoom(roomIdStr);
+      let elements = memoryState ? memoryState.getElementsArray() : (room.elements || []);
+      let version = memoryState ? memoryState.version : (room.version || 0);
+
+      // Legacy migration fallback: if room elements are empty, check legacy Chat collection
+      if ((!elements || elements.length === 0) && (!memoryState || memoryState.elements.size === 0)) {
+        try {
+          const legacyChat = await Chat.findOne({ roomId: roomIdStr }).sort({ createdAt: -1 });
+          if (legacyChat && legacyChat.message) {
+            const parsed = JSON.parse(legacyChat.message);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              elements = parsed;
+              version = 1;
+              await Room.findByIdAndUpdate(roomIdStr, {
+                $set: { elements, version }
+              });
+              console.log(`📦 Migrated ${elements.length} legacy elements into Room ${roomIdStr}`);
+            }
+          }
+        } catch (migErr) {
+          console.warn('Legacy element migration check failed:', migErr);
+        }
+      }
+
+      res.json({
+        room: {
+          _id: room._id,
+          slug: room.slug,
+          adminId: room.adminId,
+          collaborators: room.collaborators,
+          elements,
+          version,
+          createdAt: room.createdAt,
+          updatedAt: room.updatedAt,
+        }
+      });
+    } catch (err) {
+      console.error('Failed to get room:', err);
+      res.status(500).json({ message: 'Error fetching room' });
+    }
   });
 
 

@@ -13,14 +13,14 @@ dotenv_1.default.config({ path: path_1.default.resolve(__dirname, '../../../.env
 const JWT_SECRET = process.env.JWT_SECRET;
 console.log("Jwt in middleare: ", JWT_SECRET);
 function middleware(req, res, next) {
-    const token = req.headers["authorization"];
-    if (!token) {
+    const rawToken = req.headers["authorization"];
+    if (!rawToken) {
         return res.status(401).json({ message: "Authorization token missing" });
     }
+    const token = rawToken.startsWith("Bearer ") ? rawToken.slice(7) : rawToken;
     try {
         const decoded = jsonwebtoken_1.default.verify(token, JWT_SECRET);
         req.userId = decoded.userId;
-        console.log("User verified");
         next();
     }
     catch (err) {
