@@ -27,7 +27,7 @@ const ROOM_ID = 'load-test-performance-room';
 function runLoadTest() {
     return __awaiter(this, void 0, void 0, function* () {
         console.log('===============================================================');
-        console.log('       SKETCHCALIBUR WEBSOCKET LOAD-TEST SUITE                 ');
+        console.log('       SYNCBOARD WEBSOCKET LOAD-TEST           ');
         console.log('===============================================================');
         console.log(`[INIT] Target URL        : ${BACKEND_WS_URL}`);
         console.log(`[INIT] Concurrent Users  : ${CONCURRENT_USERS}`);
