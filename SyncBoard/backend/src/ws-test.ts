@@ -129,12 +129,22 @@ async function runTests() {
   await new Promise((r) => setTimeout(r, 150));
   if (!userAReceivedUserBJoined) throw new Error('User A did not receive user:joined for User B');
 
-  // Test 4: Element Creation & Broadcast
-  console.log('\n[Test 4] Differential Element Creation & Broadcast');
+  // Test 4: Differential Element Creation & Canonical Broadcast
+  console.log('\n[Test 4] Differential Element Creation & Canonical Broadcast');
   let userBReceivedElementCreate = false;
+  let userAReceivedElementCreate = false;
+
+  wsA.on('message', (data) => {
+    const msg = JSON.parse(data.toString());
+    if (msg.type === 'operation:broadcast' && msg.operation?.operationId === 'op-create-1') {
+      userAReceivedElementCreate = true;
+      console.log(`  ✓ Sender User A received canonical 'operation:broadcast' with authoritative rev: ${msg.revision}`);
+    }
+  });
+
   wsB.on('message', (data) => {
     const msg = JSON.parse(data.toString());
-    if (msg.type === 'operation:broadcast' && msg.operation.type === 'element:create') {
+    if (msg.type === 'operation:broadcast' && msg.operation?.operationId === 'op-create-1') {
       userBReceivedElementCreate = true;
       console.log(`  ✓ User B received 'operation:broadcast' for element:create (id: ${msg.operation.elementId}, rev: ${msg.revision})`);
     }
@@ -162,6 +172,100 @@ async function runTests() {
 
   await new Promise((r) => setTimeout(r, 150));
   if (!userBReceivedElementCreate) throw new Error('User B did not receive element:create broadcast');
+  if (!userAReceivedElementCreate) throw new Error('User A (sender) did not receive canonical element:create broadcast');
+
+  // Test 4b: Reverse Two-Way Synchronization (User B draws -> User A receives)
+  console.log('\n[Test 4b] Two-Way Drawing: User B draws -> User A receives');
+  let userAReceivedUserBCreate = false;
+  wsA.on('message', (data) => {
+    const msg = JSON.parse(data.toString());
+    if (msg.type === 'operation:broadcast' && msg.operation?.elementId === 'circle-b1') {
+      userAReceivedUserBCreate = true;
+      console.log(`  ✓ User A received User B's drawing broadcast (rev: ${msg.revision}, clientId: ${msg.operation.clientId})`);
+    }
+  });
+
+  wsB.send(
+    JSON.stringify({
+      type: 'element:create',
+      roomId: testRoomId,
+      clientId: 'client-bob-1',
+      operationId: 'op-create-b1',
+      elementId: 'circle-b1',
+      element: {
+        id: 'circle-b1',
+        type: 'ellipse',
+        x: 200,
+        y: 200,
+        width: 100,
+        height: 100,
+        version: 1,
+        versionNonce: 2001,
+      },
+    })
+  );
+
+  await new Promise((r) => setTimeout(r, 150));
+  if (!userAReceivedUserBCreate) throw new Error('User A did not receive User B drawing operation');
+
+  // Test 4c: Impersonation Prevention
+  console.log('\n[Test 4c] Impersonation Prevention: Spoofed clientId is overridden by authenticated socket identity');
+  let impersonationTestPassed = false;
+  wsA.on('message', (data) => {
+    const msg = JSON.parse(data.toString());
+    if (msg.type === 'operation:broadcast' && msg.operation?.elementId === 'spoof-test') {
+      // Even though User B sent 'client-alice-1', server must broadcast 'client-bob-1'
+      if (msg.operation.clientId === 'client-bob-1') {
+        impersonationTestPassed = true;
+        console.log(`  ✓ Server overrode spoofed clientId and used authoritative '${msg.operation.clientId}'`);
+      }
+    }
+  });
+
+  wsB.send(
+    JSON.stringify({
+      type: 'element:create',
+      roomId: testRoomId,
+      clientId: 'client-alice-1', // Attempting to spoof Alice's clientId!
+      operationId: 'op-spoof-1',
+      elementId: 'spoof-test',
+      element: {
+        id: 'spoof-test',
+        type: 'line',
+        x: 0,
+        y: 0,
+        version: 1,
+        versionNonce: 3001,
+      },
+    })
+  );
+
+  await new Promise((r) => setTimeout(r, 150));
+  if (!impersonationTestPassed) throw new Error('Server accepted spoofed clientId instead of enforcing authoritative socket clientId');
+
+  // Test 4d: Reject operation on unjoined room
+  console.log('\n[Test 4d] Reject operation on unjoined room');
+  let unjoinedRoomRejected = false;
+  wsA.on('message', (data) => {
+    const msg = JSON.parse(data.toString());
+    if (msg.type === 'error' && msg.message?.includes('Unauthorized: room not joined')) {
+      unjoinedRoomRejected = true;
+      console.log(`  ✓ Rejected unjoined room operation with error: "${msg.message}"`);
+    }
+  });
+
+  wsA.send(
+    JSON.stringify({
+      type: 'element:create',
+      roomId: 'unjoined-random-room-id',
+      operationId: 'op-unjoined-1',
+      elementId: 'rect-unjoined',
+      element: { id: 'rect-unjoined', type: 'rectangle', version: 1, versionNonce: 1 },
+    })
+  );
+
+  await new Promise((r) => setTimeout(r, 150));
+  if (!unjoinedRoomRejected) throw new Error('Server did not reject operation on unjoined room');
 
   // Test 5: Deterministic Conflict Reconciliation on element:update
   console.log('\n[Test 5] Element Update & Conflict Reconciliation');
