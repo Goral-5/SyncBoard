@@ -60,6 +60,18 @@ function generateOperationId(): string {
   return `op-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+// Stable client identity: keeps one persistent client ID per browser tab session
+function getSessionClientId(roomId: string): string {
+  if (typeof window === 'undefined') return Math.random().toString(36).slice(2);
+  const key = `syncboard_client_id_${roomId}`;
+  let id = sessionStorage.getItem(key);
+  if (!id) {
+    id = `client_${Math.random().toString(36).slice(2, 10)}`;
+    sessionStorage.setItem(key, id);
+  }
+  return id;
+}
+
 export function useCanvasSync({
   roomId,
   excalidrawAPI,
@@ -67,11 +79,64 @@ export function useCanvasSync({
   currentUsername,
 }: UseCanvasSyncProps): UseCanvasSyncReturn {
   const wsRef = useRef<WebSocket | null>(null);
-  const [, setWsInstance] = useState<WebSocket | null>(null);
-  const clientId = useRef<string>(Math.random().toString(36).slice(2));
+  const [wsInstance, setWsInstance] = useState<WebSocket | null>(null);
+
+  // Client ID stays stable for the lifetime of this browser tab session
+  const clientId = useRef<string>(getSessionClientId(roomId));
   const userColor = useRef<string>(getRandomColor());
   const currentRevision = useRef<number>(0);
   const previousElementsMap = useRef<Map<string, { version: number; versionNonce: number; isDeleted?: boolean }>>(new Map());
+
+  // Store Excalidraw API in a ref so changes don't tear down the WebSocket connection
+  const excalidrawAPIRef = useRef<any>(excalidrawAPI);
+  const initialElementsLoadedRef = useRef<any[] | null>(null);
+  const initialFilesLoadedRef = useRef<Record<string, any> | null>(null);
+  const sceneInitializedRef = useRef<boolean>(false);
+
+  // Keep excalidrawAPIRef in sync with latest instance
+  useEffect(() => {
+    excalidrawAPIRef.current = excalidrawAPI;
+    // If elements arrived before Excalidraw was ready, initialize the scene now
+    if (excalidrawAPI && initialElementsLoadedRef.current && !sceneInitializedRef.current) {
+      sceneInitializedRef.current = true;
+      isRemoteUpdate.current = true;
+      excalidrawAPI.updateScene({
+        elements: initialElementsLoadedRef.current,
+        files: initialFilesLoadedRef.current || undefined,
+      });
+    }
+  }, [excalidrawAPI]);
+
+  // Bounded set of recently applied operation IDs to prevent duplicate execution
+  const appliedOperationIds = useRef<Set<string>>(new Set());
+  const appliedOperationQueue = useRef<string[]>([]);
+
+  // Record an operation ID as applied locally so broadcast echoes can be ignored safely
+  const markOperationApplied = useCallback((opId: string) => {
+    if (!opId) return;
+    if (appliedOperationIds.current.has(opId)) return;
+    appliedOperationIds.current.add(opId);
+    appliedOperationQueue.current.push(opId);
+    // Maintain maximum 1000 operation IDs in memory to avoid unbounded memory growth
+    if (appliedOperationQueue.current.length > 1000) {
+      const oldest = appliedOperationQueue.current.shift();
+      if (oldest) {
+        appliedOperationIds.current.delete(oldest);
+      }
+    }
+  }, []);
+
+  // Helper to ensure board revision increases monotonically and never moves backwards
+  const applyRevisionIfNewer = useCallback((nextRevision: number): boolean => {
+    if (typeof nextRevision !== 'number') return false;
+    if (nextRevision < currentRevision.current) {
+      console.warn(`[Sync] Stale revision rejected (incoming: ${nextRevision}, current: ${currentRevision.current})`);
+      return false;
+    }
+    currentRevision.current = nextRevision;
+    setBoardRevision(nextRevision);
+    return true;
+  }, []);
 
   // Concurrency & loop prevention flags
   const isRemoteUpdate = useRef<boolean>(false);
@@ -95,9 +160,10 @@ export function useCanvasSync({
 
   // ── 1. Reconcile and apply incoming elements into Excalidraw scene ──────────
   const reconcileAndApplyIncoming = useCallback((incomingElements: any[]) => {
-    if (!excalidrawAPI || !incomingElements || incomingElements.length === 0) return;
+    const api = excalidrawAPIRef.current;
+    if (!api || !incomingElements || incomingElements.length === 0) return;
 
-    const currentScene = excalidrawAPI.getSceneElements() as readonly any[];
+    const currentScene = api.getSceneElements() as readonly any[];
     const elementsMap = new Map<string, any>();
 
     currentScene.forEach((el) => elementsMap.set(el.id, el));
@@ -119,8 +185,34 @@ export function useCanvasSync({
 
     // Flag that this update came from remote so onChange won't rebroadcast it
     isRemoteUpdate.current = true;
-    excalidrawAPI.updateScene({ elements: mergedElements });
-  }, [excalidrawAPI]);
+    api.updateScene({ elements: mergedElements });
+  }, []);
+
+  // Ephemeral Move Preview: updates element coordinates in the scene without incrementing revision
+  const applyMovePreview = useCallback((previewElement: any) => {
+    const api = excalidrawAPIRef.current;
+    if (!api || !previewElement || !previewElement.id) return;
+    const currentScene = api.getSceneElements() as readonly any[];
+    let found = false;
+    const updated = currentScene.map((el) => {
+      if (el.id === previewElement.id) {
+        found = true;
+        return {
+          ...el,
+          x: previewElement.x,
+          y: previewElement.y,
+          width: previewElement.width ?? el.width,
+          height: previewElement.height ?? el.height,
+          points: previewElement.points ?? el.points,
+        };
+      }
+      return el;
+    });
+    if (found) {
+      isRemoteUpdate.current = true;
+      api.updateScene({ elements: updated });
+    }
+  }, []);
 
   // ── 2. Initial Room Fetch via REST API (GET /room/:idOrSlug) ────────────────
   useEffect(() => {
@@ -162,24 +254,28 @@ export function useCanvasSync({
           });
         });
 
-        // Populate Excalidraw scene if API is ready
-        if (excalidrawAPI) {
-          // Pre-populate files record for Cloudinary images
-          const imageElements = roomElements.filter(
-            (el: any) => el.type === 'image' && el.fileId && (el.cloudinaryUrl || el.dataURL)
-          );
-          const filesRecord: Record<string, any> = {};
-          imageElements.forEach((el: any) => {
-            filesRecord[el.fileId] = {
-              id: el.fileId,
-              dataURL: el.cloudinaryUrl || el.dataURL,
-              mimeType: el.mimeType || 'image/png',
-              created: Date.now(),
-            };
-          });
+        // Pre-populate files record for Cloudinary images
+        const imageElements = roomElements.filter(
+          (el: any) => el.type === 'image' && el.fileId && (el.cloudinaryUrl || el.dataURL)
+        );
+        const filesRecord: Record<string, any> = {};
+        imageElements.forEach((el: any) => {
+          filesRecord[el.fileId] = {
+            id: el.fileId,
+            dataURL: el.cloudinaryUrl || el.dataURL,
+            mimeType: el.mimeType || 'image/png',
+            created: Date.now(),
+          };
+        });
 
+        initialElementsLoadedRef.current = roomElements;
+        initialFilesLoadedRef.current = filesRecord;
+
+        // Populate Excalidraw scene if API is already mounted
+        if (excalidrawAPIRef.current && !sceneInitializedRef.current) {
+          sceneInitializedRef.current = true;
           isRemoteUpdate.current = true;
-          excalidrawAPI.updateScene({
+          excalidrawAPIRef.current.updateScene({
             elements: roomElements,
             files: filesRecord,
           });
@@ -196,7 +292,7 @@ export function useCanvasSync({
     return () => {
       isSubscribed = false;
     };
-  }, [roomId, excalidrawAPI]);
+  }, [roomId]);
 
   // ── 3. WebSocket Lifecycle & Protocol Dispatcher ───────────────────────────
   useEffect(() => {
@@ -226,11 +322,12 @@ export function useCanvasSync({
           setConnectionStatus('connected');
           reconnectAttempts.current = 0;
 
-          // Send room:join with lastKnownVersion to allow catch-up
+          // Send authoritative room:join message with stable session clientId and lastKnownVersion
           ws.send(
             JSON.stringify({
               type: 'room:join',
               roomId,
+              clientId: clientId.current,
               lastKnownVersion: currentRevision.current,
             })
           );
@@ -241,6 +338,12 @@ export function useCanvasSync({
           try {
             const data = JSON.parse(event.data);
 
+            // Handle Server Error Messages
+            if (data.type === 'error') {
+              console.error('[Sync] Server collaboration error:', data.message);
+              return;
+            }
+
             // Handle Heartbeat Ping
             if (data.type === 'ping') {
               ws.send(JSON.stringify({ type: 'pong' }));
@@ -250,8 +353,7 @@ export function useCanvasSync({
             // 1. Initial Room State
             if (data.type === 'room:state' && data.roomId === roomId) {
               if (typeof data.revision === 'number') {
-                currentRevision.current = data.revision;
-                setBoardRevision(data.revision);
+                applyRevisionIfNewer(data.revision);
               }
               if (Array.isArray(data.users)) {
                 setCollaborators(data.users);
@@ -261,31 +363,74 @@ export function useCanvasSync({
               }
             }
 
-            // 2. Broadcasted Element Operation
+            // 2. Broadcasted Element Operation (Canonical Accepted Mutation)
             else if (data.type === 'operation:broadcast' && data.roomId === roomId) {
               const op: ElementOperation = data.operation;
-              if (op && op.clientId !== clientId.current) {
-                if (typeof data.revision === 'number') {
-                  currentRevision.current = data.revision;
-                  setBoardRevision(data.revision);
+              if (!op) return;
+
+              // Ephemeral Move Preview: apply drag movement directly without revision checks
+              if (op.type === 'element:move-preview') {
+                if (op.clientId !== clientId.current && op.element) {
+                  applyMovePreview(op.element);
                 }
-                if (op.element) {
-                  reconcileAndApplyIncoming([op.element]);
-                }
+                return;
+              }
+
+              // Update authoritative board revision monotonically for all clients (including sender)
+              const prevRev = currentRevision.current;
+              if (typeof data.revision === 'number') {
+                applyRevisionIfNewer(data.revision);
+              }
+
+              // Gap Detection: If revisions jumped by more than 1, request missing operations catch-up
+              if (
+                typeof data.revision === 'number' &&
+                prevRev > 0 &&
+                data.revision > prevRev + 1 &&
+                wsRef.current?.readyState === WebSocket.OPEN
+              ) {
+                console.log(`[Sync] Revision gap detected (server: ${data.revision}, client: ${prevRev}). Requesting catch-up...`);
+                wsRef.current.send(
+                  JSON.stringify({
+                    type: 'room:sync-request',
+                    roomId,
+                    lastKnownVersion: prevRev,
+                  })
+                );
+              }
+
+              // Deduplication Check: If this client generated this operation, we already rendered it optimistically!
+              // Skipping scene re-application avoids shape flickering, cursor jumps, and selection drops.
+              if (op.operationId && appliedOperationIds.current.has(op.operationId)) {
+                return;
+              }
+
+              // Mark remote operation as applied to avoid re-applying on subsequent broadcasts
+              if (op.operationId) {
+                markOperationApplied(op.operationId);
+              }
+
+              // Apply accepted mutation to canvas scene
+              if (op.element) {
+                reconcileAndApplyIncoming([op.element]);
               }
             }
 
             // 3. Catchup Sync (Incremental operations or Full resync)
             else if (data.type === 'room:sync' && data.roomId === roomId) {
               if (typeof data.revision === 'number') {
-                currentRevision.current = data.revision;
-                setBoardRevision(data.revision);
+                applyRevisionIfNewer(data.revision);
               }
               if (data.fullSync && Array.isArray(data.elements)) {
                 reconcileAndApplyIncoming(data.elements);
               } else if (Array.isArray(data.operations)) {
                 const elementsToApply = data.operations
-                  .map((op: ElementOperation) => op.element)
+                  .map((syncOp: ElementOperation) => {
+                    if (syncOp.operationId) {
+                      markOperationApplied(syncOp.operationId);
+                    }
+                    return syncOp.element;
+                  })
                   .filter(Boolean);
                 if (elementsToApply.length > 0) {
                   reconcileAndApplyIncoming(elementsToApply);
@@ -384,7 +529,7 @@ export function useCanvasSync({
         setWsInstance(null);
       }
     };
-  }, [roomId, reconcileAndApplyIncoming]);
+  }, [roomId]);
 
   // ── 4. Periodic 5-Second Ghost Cursor Cleanup ──────────────────────────────
   useEffect(() => {
@@ -434,9 +579,11 @@ export function useCanvasSync({
       // Case 1: Brand new element
       if (!prev) {
         if (!el.isDeleted) {
+          const opId = generateOperationId();
+          markOperationApplied(opId);
           const createOp: ElementOperation = {
             type: 'element:create',
-            operationId: generateOperationId(),
+            operationId: opId,
             roomId,
             clientId: clientId.current,
             elementId: el.id,
@@ -454,9 +601,11 @@ export function useCanvasSync({
 
       // Case 2: Deleted element
       if (el.isDeleted && !prev.isDeleted) {
+        const opId = generateOperationId();
+        markOperationApplied(opId);
         const deleteOp: ElementOperation = {
           type: 'element:delete',
-          operationId: generateOperationId(),
+          operationId: opId,
           roomId,
           clientId: clientId.current,
           elementId: el.id,
@@ -495,9 +644,11 @@ export function useCanvasSync({
           }
         } else {
           // Regular discrete edit (color change, resize commit, text edit, etc.)
+          const opId = generateOperationId();
+          markOperationApplied(opId);
           const updateOp: ElementOperation = {
             type: 'element:update',
-            operationId: generateOperationId(),
+            operationId: opId,
             roomId,
             clientId: clientId.current,
             elementId: el.id,
@@ -513,7 +664,7 @@ export function useCanvasSync({
         });
       }
     }
-  }, [roomId]);
+  }, [roomId, markOperationApplied]);
 
   // ── 6. Drag Lifecycle (Pointer Down & Up for Move Commit) ───────────────────
   const handlePointerDown = useCallback(() => {
@@ -529,9 +680,11 @@ export function useCanvasSync({
       ) {
         // Commit all pending moved elements
         for (const el of pendingMovedElements.current.values()) {
+          const opId = generateOperationId();
+          markOperationApplied(opId);
           const commitOp: ElementOperation = {
             type: 'element:move-commit',
-            operationId: generateOperationId(),
+            operationId: opId,
             roomId,
             clientId: clientId.current,
             elementId: el.id,
@@ -543,7 +696,7 @@ export function useCanvasSync({
       pendingMovedElements.current.clear();
       isDragging.current = false;
     }
-  }, [roomId]);
+  }, [roomId, markOperationApplied]);
 
   // ── 7. Ephemeral Pointer & Selection Updates (Throttled at 25 Hz) ───────────
   const handlePointerUpdate = useCallback((
@@ -577,7 +730,7 @@ export function useCanvasSync({
     remoteSelections,
     boardRevision,
     isLoadingRoom,
-    ws: wsRef.current,
+    ws: wsInstance,
     handleCanvasChange,
     handlePointerUpdate,
     handlePointerDown,

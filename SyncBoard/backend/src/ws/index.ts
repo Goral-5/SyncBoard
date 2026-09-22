@@ -44,11 +44,43 @@ interface SocketMetadata {
   isAlive: boolean;
   defaultClientId: string;
   joinedRooms: Set<string>;
+  // Authoritative map of roomId -> clientId registered during room:join
   roomClientIds: Map<string, string>;
+  // Authoritative map of roomId -> user role ('admin' | 'editor' | 'viewer')
+  roomRoles: Map<string, 'admin' | 'editor' | 'viewer'>;
 }
 
 // Global active socket map: WebSocket -> SocketMetadata
 const clientSocketMap = new Map<WebSocket, SocketMetadata>();
+
+/**
+ * Security Helper: Authoritative Room & Client Identity Verification
+ *
+ * Checks:
+ * 1. Has this socket physically joined the specified room?
+ * 2. Does this socket have an authoritative client ID registered for the room?
+ * 3. Does the user have write permission (admin or editor) when requireWrite is true?
+ *
+ * This ensures no client can impersonate another client ID or draw in rooms they haven't joined.
+ */
+function getAuthorizedClient(
+  socketData: SocketMetadata,
+  roomId: string,
+  requireWrite: boolean = true
+): { authenticatedClientId: string; role: 'admin' | 'editor' | 'viewer' } | null {
+  if (!roomId || !socketData.joinedRooms.has(roomId)) {
+    return null;
+  }
+  const authenticatedClientId = socketData.roomClientIds.get(roomId);
+  if (!authenticatedClientId) {
+    return null;
+  }
+  const role = socketData.roomRoles.get(roomId) || 'editor';
+  if (requireWrite && role !== 'admin' && role !== 'editor') {
+    return null;
+  }
+  return { authenticatedClientId, role };
+}
 
 // Active room tracking for periodic persistence
 const activeRoomSet = new Set<string>();
@@ -188,6 +220,7 @@ export function attachWebSocketServer(server: any) {
       defaultClientId,
       joinedRooms: new Set<string>(),
       roomClientIds: new Map<string, string>(),
+      roomRoles: new Map<string, 'admin' | 'editor' | 'viewer'>(),
     };
 
     clientSocketMap.set(ws, socketData);
@@ -221,9 +254,10 @@ export function attachWebSocketServer(server: any) {
               return;
             }
 
-            const clientSessionId = parsed.clientId || socketData.defaultClientId;
-            socketData.roomClientIds.set(roomId, clientSessionId);
-            socketData.joinedRooms.add(roomId);
+            // Extract client-requested ID or fallback to default session ID
+            const clientSessionId = (typeof parsed.clientId === 'string' && parsed.clientId.trim().length > 0)
+              ? parsed.clientId.trim()
+              : socketData.defaultClientId;
 
             // Permission Verification against MongoDB
             const isValidObjectId = mongoose.Types.ObjectId.isValid(roomId) && /^[0-9a-fA-F]{24}$/.test(roomId);
@@ -257,11 +291,25 @@ export function attachWebSocketServer(server: any) {
               return;
             }
 
+            const effectiveRole = (role as 'admin' | 'editor' | 'viewer') || 'editor';
+
             // Get or cold-load authoritative in-memory state
             const roomState = await roomManager.getOrCreateRoom(roomId);
             if (!roomState) {
               ws.send(JSON.stringify({ type: 'error', message: 'Failed to initialize room state' }));
               return;
+            }
+
+            // Authoritatively bind client identity and role to this specific WebSocket connection and room
+            // (We bind both the requested roomId and canonical roomState.roomId so lookups always succeed)
+            socketData.roomClientIds.set(roomId, clientSessionId);
+            socketData.roomRoles.set(roomId, effectiveRole);
+            socketData.joinedRooms.add(roomId);
+
+            if (roomState.roomId !== roomId) {
+              socketData.roomClientIds.set(roomState.roomId, clientSessionId);
+              socketData.roomRoles.set(roomState.roomId, effectiveRole);
+              socketData.joinedRooms.add(roomState.roomId);
             }
 
             activeRoomSet.add(roomState.roomId);
@@ -277,7 +325,7 @@ export function attachWebSocketServer(server: any) {
             };
             roomState.addClient(session);
 
-            console.log(`🏠 [Room Join] ${socketData.username} joined '${roomId}' (${roomState.roomId}) as ${role || 'member'}`);
+            console.log(`🏠 [Room Join] ${socketData.username} joined '${roomId}' (${roomState.roomId}) as ${effectiveRole} (clientId: ${clientSessionId})`);
 
             // Send initial room:state
             ws.send(
@@ -376,129 +424,158 @@ export function attachWebSocketServer(server: any) {
 
           // ── PROTOCOL 3: Differential Element Operations ──────────────────
           case 'element:create': {
-            const { roomId, operationId, clientId, elementId, element } = parsed;
+            const { roomId, operationId, elementId, element } = parsed;
             if (!roomId || !element) return;
+
+            // Security Check: Socket must be inside room and have write permissions
+            const auth = getAuthorizedClient(socketData, roomId, true);
+            if (!auth) {
+              ws.send(JSON.stringify({ type: 'error', message: 'Unauthorized: room not joined or read-only' }));
+              return;
+            }
 
             const roomState = roomManager.getRoom(roomId);
             if (!roomState) return;
 
-            const result = roomState.createElement(element, operationId, clientId);
+            // Apply mutation using authoritative clientId from server-side state (never client payload)
+            const result = roomState.createElement(element, operationId, auth.authenticatedClientId);
             if (result.success) {
               scheduleDebouncedPersist(roomState.roomId, roomState);
 
-              roomState.broadcast(
-                {
-                  type: 'operation:broadcast',
-                  roomId,
-                  revision: result.revision,
-                  operation: {
-                    type: 'element:create',
-                    operationId: operationId || `op-${Date.now()}`,
-                    clientId: clientId || socketData.defaultClientId,
-                    elementId: elementId || element.id,
-                    element: result.element,
-                  },
+              // Broadcast canonical accepted operation to ALL room members (including sender)
+              // This allows every client, including the sender, to reconcile with the authoritative revision
+              roomState.broadcast({
+                type: 'operation:broadcast',
+                roomId,
+                revision: result.revision,
+                operation: {
+                  type: 'element:create',
+                  operationId: operationId || `op-${Date.now()}`,
+                  clientId: auth.authenticatedClientId,
+                  elementId: elementId || element.id,
+                  element: result.element,
                 },
-                clientId || socketData.defaultClientId
-              );
+              });
             }
             break;
           }
 
           case 'element:update': {
-            const { roomId, operationId, clientId, elementId, element } = parsed;
+            const { roomId, operationId, elementId, element } = parsed;
             if (!roomId || !element) return;
+
+            // Security Check: Socket must be inside room and have write permissions
+            const auth = getAuthorizedClient(socketData, roomId, true);
+            if (!auth) {
+              ws.send(JSON.stringify({ type: 'error', message: 'Unauthorized: room not joined or read-only' }));
+              return;
+            }
 
             const roomState = roomManager.getRoom(roomId);
             if (!roomState) return;
 
-            const result = roomState.updateElement(element, operationId, clientId);
+            // Apply mutation using authoritative clientId from server-side state
+            const result = roomState.updateElement(element, operationId, auth.authenticatedClientId);
             if (result.success) {
               scheduleDebouncedPersist(roomState.roomId, roomState);
 
-              roomState.broadcast(
-                {
-                  type: 'operation:broadcast',
-                  roomId,
-                  revision: result.revision,
-                  operation: {
-                    type: 'element:update',
-                    operationId: operationId || `op-${Date.now()}`,
-                    clientId: clientId || socketData.defaultClientId,
-                    elementId: elementId || element.id,
-                    element: result.element,
-                  },
+              // Broadcast canonical accepted operation to ALL room members (including sender)
+              roomState.broadcast({
+                type: 'operation:broadcast',
+                roomId,
+                revision: result.revision,
+                operation: {
+                  type: 'element:update',
+                  operationId: operationId || `op-${Date.now()}`,
+                  clientId: auth.authenticatedClientId,
+                  elementId: elementId || element.id,
+                  element: result.element,
                 },
-                clientId || socketData.defaultClientId
-              );
+              });
             }
             break;
           }
 
           case 'element:delete': {
-            const { roomId, operationId, clientId, elementId } = parsed;
+            const { roomId, operationId, elementId } = parsed;
             if (!roomId || !elementId) return;
+
+            // Security Check: Socket must be inside room and have write permissions
+            const auth = getAuthorizedClient(socketData, roomId, true);
+            if (!auth) {
+              ws.send(JSON.stringify({ type: 'error', message: 'Unauthorized: room not joined or read-only' }));
+              return;
+            }
 
             const roomState = roomManager.getRoom(roomId);
             if (!roomState) return;
 
-            const result = roomState.deleteElement(elementId, operationId, clientId);
+            // Apply soft-deletion using authoritative clientId
+            const result = roomState.deleteElement(elementId, operationId, auth.authenticatedClientId);
             if (result.success) {
               scheduleDebouncedPersist(roomState.roomId, roomState);
 
-              roomState.broadcast(
-                {
-                  type: 'operation:broadcast',
-                  roomId,
-                  revision: result.revision,
-                  operation: {
-                    type: 'element:delete',
-                    operationId: operationId || `op-${Date.now()}`,
-                    clientId: clientId || socketData.defaultClientId,
-                    elementId,
-                    element: result.element,
-                  },
+              // Broadcast canonical deletion to ALL room members (including sender)
+              roomState.broadcast({
+                type: 'operation:broadcast',
+                roomId,
+                revision: result.revision,
+                operation: {
+                  type: 'element:delete',
+                  operationId: operationId || `op-${Date.now()}`,
+                  clientId: auth.authenticatedClientId,
+                  elementId,
+                  element: result.element,
                 },
-                clientId || socketData.defaultClientId
-              );
+              });
             }
             break;
           }
 
           case 'element:move-commit': {
-            const { roomId, operationId, clientId, elementId, element } = parsed;
+            const { roomId, operationId, elementId, element } = parsed;
             if (!roomId || !element) return;
+
+            // Security Check: Socket must be inside room and have write permissions
+            const auth = getAuthorizedClient(socketData, roomId, true);
+            if (!auth) {
+              ws.send(JSON.stringify({ type: 'error', message: 'Unauthorized: room not joined or read-only' }));
+              return;
+            }
 
             const roomState = roomManager.getRoom(roomId);
             if (!roomState) return;
 
-            const result = roomState.commitMove(element, operationId, clientId);
+            // Commit final drag position using authoritative clientId
+            const result = roomState.commitMove(element, operationId, auth.authenticatedClientId);
             if (result.success) {
               scheduleDebouncedPersist(roomState.roomId, roomState);
 
-              roomState.broadcast(
-                {
-                  type: 'operation:broadcast',
-                  roomId,
-                  revision: result.revision,
-                  operation: {
-                    type: 'element:move-commit',
-                    operationId: operationId || `op-${Date.now()}`,
-                    clientId: clientId || socketData.defaultClientId,
-                    elementId: elementId || element.id,
-                    element: result.element,
-                  },
+              // Broadcast canonical move-commit to ALL room members (including sender)
+              roomState.broadcast({
+                type: 'operation:broadcast',
+                roomId,
+                revision: result.revision,
+                operation: {
+                  type: 'element:move-commit',
+                  operationId: operationId || `op-${Date.now()}`,
+                  clientId: auth.authenticatedClientId,
+                  elementId: elementId || element.id,
+                  element: result.element,
                 },
-                clientId || socketData.defaultClientId
-              );
+              });
             }
             break;
           }
 
           // ── PROTOCOL 4: Ephemeral Movement Preview (Drag Strokes) ────────
           case 'element:move-preview': {
-            const { roomId, operationId, clientId, elementId, element } = parsed;
+            const { roomId, operationId, elementId, element } = parsed;
             if (!roomId || !element) return;
+
+            // Security Check: Socket must be inside room and have write permissions
+            const auth = getAuthorizedClient(socketData, roomId, true);
+            if (!auth) return;
 
             const roomState = roomManager.getRoom(roomId);
             if (!roomState) return;
@@ -506,7 +583,7 @@ export function attachWebSocketServer(server: any) {
             const previewOp: MovePreviewOperation = {
               type: 'element:move-preview',
               operationId: operationId || `preview-${Date.now()}`,
-              clientId: clientId || socketData.defaultClientId,
+              clientId: auth.authenticatedClientId,
               roomId,
               elementId: elementId || element.id,
               element,
@@ -515,6 +592,7 @@ export function attachWebSocketServer(server: any) {
             const previewResult = roomState.handleMovePreview(previewOp);
             if (previewResult.isValid) {
               // Broadcast ephemeral preview without DB persistence or revision increment
+              // (Sender is already rendering local drag, so exclude sender to minimize traffic)
               roomState.broadcast(
                 {
                   type: 'operation:broadcast',
@@ -522,7 +600,7 @@ export function attachWebSocketServer(server: any) {
                   revision: roomState.getRevision(),
                   operation: previewOp,
                 },
-                clientId || socketData.defaultClientId
+                auth.authenticatedClientId
               );
             }
             break;
@@ -533,25 +611,28 @@ export function attachWebSocketServer(server: any) {
             const { roomId, cursor, selectedElementId } = parsed;
             if (!roomId) return;
 
+            // Security Check: Socket must be inside room (read-only users CAN broadcast cursor)
+            const auth = getAuthorizedClient(socketData, roomId, false);
+            if (!auth) return;
+
             const roomState = roomManager.getRoom(roomId);
             if (!roomState) return;
 
-            const senderClientId = socketData.roomClientIds.get(roomId) || socketData.defaultClientId;
-            roomState.updatePresence(senderClientId, cursor, selectedElementId);
+            roomState.updatePresence(auth.authenticatedClientId, cursor, selectedElementId);
 
             // Broadcast cursor coordinates directly from memory (zero DB I/O)
             roomState.broadcast(
               {
                 type: 'presence:update',
                 roomId,
-                clientId: senderClientId,
+                clientId: auth.authenticatedClientId,
                 userId: socketData.userId,
                 username: socketData.username,
                 color: socketData.color,
                 cursor,
                 selectedElementId,
               },
-              senderClientId
+              auth.authenticatedClientId
             );
             break;
           }
@@ -642,16 +723,18 @@ export function attachWebSocketServer(server: any) {
 
       console.log(`🚪 [WS Disconnected] ${socketData.username} (${socketData.userId})`);
 
+      const visitedRooms = new Set<string>();
       for (const roomId of socketData.joinedRooms) {
         const roomState = roomManager.getRoom(roomId);
-        if (roomState) {
-          const clientId = socketData.roomClientIds.get(roomId) || socketData.defaultClientId;
+        if (roomState && !visitedRooms.has(roomState.roomId)) {
+          visitedRooms.add(roomState.roomId);
+          const clientId = socketData.roomClientIds.get(roomId) || socketData.roomClientIds.get(roomState.roomId) || socketData.defaultClientId;
           roomState.removeClient(clientId);
 
-          // Broadcast user:left to remaining room collaborators
+          // Broadcast user:left to remaining room collaborators using authoritative client ID
           roomState.broadcast({
             type: 'user:left',
-            roomId,
+            roomId: roomState.roomId,
             clientId,
             userId: socketData.userId,
           });

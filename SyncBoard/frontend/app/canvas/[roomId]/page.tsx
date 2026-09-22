@@ -52,6 +52,12 @@ export default function CanvasPage() {
     zoom: 1,
   });
 
+  // Stabilize Excalidraw API setter callback so it doesn't trigger extra re-renders
+  const handleExcalidrawAPI = useCallback((api: any) => {
+    excalidrawAPIRef.current = api;
+    setExcalidrawAPI((prev: any) => (prev === api ? prev : api));
+  }, []);
+
   // ── 1. JWT decode for user identity ────────────────────────────────────────
   useEffect(() => {
     const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
@@ -103,12 +109,21 @@ export default function CanvasPage() {
   // ── 4. Unified Canvas Change Handler ────────────────────────────────────────
   const onExcalidrawChange = useCallback(
     (elements: readonly any[], appState: any) => {
-      // Keep viewport transform updated for projecting remote cursors
+      // Keep viewport transform updated for projecting remote cursors without re-rendering if unchanged
       if (appState) {
-        setCanvasTransform({
-          scrollX: appState.scrollX ?? 0,
-          scrollY: appState.scrollY ?? 0,
-          zoom: appState.zoom?.value ?? 1,
+        const nextScrollX = appState.scrollX ?? 0;
+        const nextScrollY = appState.scrollY ?? 0;
+        const nextZoom = appState.zoom?.value ?? 1;
+
+        setCanvasTransform((prev) => {
+          if (
+            prev.scrollX === nextScrollX &&
+            prev.scrollY === nextScrollY &&
+            prev.zoom === nextZoom
+          ) {
+            return prev;
+          }
+          return { scrollX: nextScrollX, scrollY: nextScrollY, zoom: nextZoom };
         });
       }
 
@@ -269,10 +284,7 @@ User Request: ${aiPrompt}`,
 
       {/* Main Excalidraw Canvas */}
       <Excalidraw
-        excalidrawAPI={(api) => {
-          excalidrawAPIRef.current = api;
-          setExcalidrawAPI(api);
-        }}
+        excalidrawAPI={handleExcalidrawAPI}
         theme="light"
         onChange={onExcalidrawChange}
         onPointerUpdate={onPointerUpdate}
