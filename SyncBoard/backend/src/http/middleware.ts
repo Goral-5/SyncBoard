@@ -6,8 +6,7 @@ import path from 'path';
 dotenv.config(); // Load JWT_SECRET from .env
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
-
-const JWT_SECRET = process.env.JWT_SECRET as string;
+import { JWT_SECRET } from "../config";
 
 // Extend Express Request type to include userId
 declare global {

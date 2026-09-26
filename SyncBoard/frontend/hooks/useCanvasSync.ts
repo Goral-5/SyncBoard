@@ -15,6 +15,7 @@ interface UseCanvasSyncProps {
   excalidrawAPI: any;
   currentUserId?: string | null;
   currentUsername?: string;
+  canJoin?: boolean;
 }
 
 interface UseCanvasSyncReturn {
@@ -77,6 +78,7 @@ export function useCanvasSync({
   excalidrawAPI,
   currentUserId,
   currentUsername,
+  canJoin = true,
 }: UseCanvasSyncProps): UseCanvasSyncReturn {
   const wsRef = useRef<WebSocket | null>(null);
   const [wsInstance, setWsInstance] = useState<WebSocket | null>(null);
@@ -228,7 +230,7 @@ export function useCanvasSync({
     async function loadInitialRoom() {
       try {
         const res = await fetch(`${BACKEND_URL}/room/${roomId}`, {
-          headers: { Authorization: token ?? '' },
+          headers: { Authorization: token ? (token.startsWith('Bearer ') ? token : `Bearer ${token}`) : '' },
         });
 
         if (!res.ok) {
@@ -242,6 +244,16 @@ export function useCanvasSync({
 
         const roomElements = data.room.elements || [];
         const roomVersion = data.room.version || 0;
+
+        // GUARD: Only apply REST snapshot if it is at least as new as current WS state
+        if (roomVersion < currentRevision.current) {
+          console.log(
+            `[Sync] REST snapshot (rev ${roomVersion}) is older than WS state (rev ${currentRevision.current}) — skipping REST overwrite`
+          );
+          if (isSubscribed) setIsLoadingRoom(false);
+          return;
+        }
+
         currentRevision.current = roomVersion;
         setBoardRevision(roomVersion);
 
@@ -298,7 +310,7 @@ export function useCanvasSync({
   useEffect(() => {
     isMounted.current = true;
     const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
-    if (!token || !roomId) return;
+    if (!token || !roomId || !canJoin) return;
 
     function connect() {
       if (!isMounted.current) return;
@@ -472,6 +484,9 @@ export function useCanvasSync({
                   if (prev.some((u) => u.clientId === user.clientId)) return prev;
                   return [...prev, user];
                 });
+                if (typeof window !== 'undefined') {
+                  window.dispatchEvent(new CustomEvent('syncboard:user-joined', { detail: user }));
+                }
               }
             }
 
@@ -489,6 +504,14 @@ export function useCanvasSync({
                 delete next[leftClientId];
                 return next;
               });
+            }
+
+            // 7. Operation Rejected (Server Authority Rollback)
+            else if (data.type === 'operation:rejected') {
+              console.warn('[Sync] Operation rejected by server for element:', data.elementId, 'reason:', data.reason);
+              if (data.authoritativeElement) {
+                reconcileAndApplyIncoming([data.authoritativeElement]);
+              }
             }
           } catch (parseError) {
             console.warn('[Sync] Non-JSON or invalid WebSocket message received:', parseError);
@@ -529,7 +552,7 @@ export function useCanvasSync({
         setWsInstance(null);
       }
     };
-  }, [roomId]);
+  }, [roomId, canJoin]);
 
   // ── 4. Periodic 5-Second Ghost Cursor Cleanup ──────────────────────────────
   useEffect(() => {

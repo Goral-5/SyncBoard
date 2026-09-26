@@ -10,7 +10,7 @@ const path_1 = __importDefault(require("path"));
 dotenv_1.default.config(); // Load JWT_SECRET from .env
 dotenv_1.default.config({ path: path_1.default.resolve(__dirname, '../../.env') });
 dotenv_1.default.config({ path: path_1.default.resolve(__dirname, '../../../.env') });
-const JWT_SECRET = process.env.JWT_SECRET;
+const config_1 = require("../config");
 function middleware(req, res, next) {
     let token = req.headers["authorization"];
     if (!token) {
@@ -20,7 +20,7 @@ function middleware(req, res, next) {
         token = token.slice(7).trim();
     }
     try {
-        const decoded = jsonwebtoken_1.default.verify(token, JWT_SECRET);
+        const decoded = jsonwebtoken_1.default.verify(token, config_1.JWT_SECRET);
         req.userId = decoded.userId;
         next();
     }

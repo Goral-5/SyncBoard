@@ -10,8 +10,7 @@ import {
   ElementOperation,
   MovePreviewOperation,
 } from '../types/room';
-
-const JWT_SECRET = process.env.JWT_SECRET || 'abcdefghijkl';
+import { JWT_SECRET } from '../config';
 
 // Curated collaborator palette for vibrant, distinct cursors and avatars
 const COLLABORATOR_COLORS = [
@@ -492,6 +491,17 @@ export function attachWebSocketServer(server: any) {
                   element: result.element,
                 },
               });
+            } else if (result.ignored && result.element) {
+              // Send operation:rejected back to sender so their canvas reconciles with server truth
+              ws.send(
+                JSON.stringify({
+                  type: 'operation:rejected',
+                  roomId,
+                  elementId: elementId || element.id,
+                  reason: 'stale_version',
+                  authoritativeElement: result.element,
+                })
+              );
             }
             break;
           }
@@ -564,6 +574,17 @@ export function attachWebSocketServer(server: any) {
                   element: result.element,
                 },
               });
+            } else if (result.ignored && result.element) {
+              // Send operation:rejected back to sender so their canvas reconciles with server truth
+              ws.send(
+                JSON.stringify({
+                  type: 'operation:rejected',
+                  roomId,
+                  elementId: elementId || element.id,
+                  reason: 'stale_version',
+                  authoritativeElement: result.element,
+                })
+              );
             }
             break;
           }

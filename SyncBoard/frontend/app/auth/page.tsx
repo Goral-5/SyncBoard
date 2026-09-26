@@ -28,11 +28,13 @@ import { BACKEND_URL } from '../../config';
 function AuthPage() {
   const router = useRouter();
   
-  // Auto-redirect if already logged in
+  // Auto-redirect if already logged in (respect returnUrl)
   React.useEffect(() => {
     const token = localStorage.getItem('token');
     if (token) {
-      router.push('/dashboard');
+      const returnUrl = sessionStorage.getItem('returnUrl');
+      sessionStorage.removeItem('returnUrl');
+      router.push(returnUrl || '/dashboard');
     }
   }, [router]);
 
@@ -89,7 +91,9 @@ function AuthPage() {
         toast.success(activeTab === 'signup' ? 'Account created successfully!' : 'Logged in successfully!', { theme: 'dark' });
         if (response.data.token) {
           localStorage.setItem('token', response.data.token);
-          setTimeout(() => router.push('/dashboard'), 1000);
+          const returnUrl = sessionStorage.getItem('returnUrl');
+          sessionStorage.removeItem('returnUrl');
+          setTimeout(() => router.push(returnUrl || '/dashboard'), 1000);
         } else if (activeTab === 'signup') {
           setActiveTab('login');
           setFormData({ username: '', email: '', password: '' });

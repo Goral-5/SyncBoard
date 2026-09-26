@@ -20,7 +20,7 @@ const User_1 = require("../models/User");
 const Room_1 = require("../models/Room");
 const Message_1 = require("../models/Message");
 const roomManager_1 = require("./roomManager");
-const JWT_SECRET = process.env.JWT_SECRET || 'abcdefghijkl';
+const config_1 = require("../config");
 // Curated collaborator palette for vibrant, distinct cursors and avatars
 const COLLABORATOR_COLORS = [
     '#FF4C4C', // Coral Red
@@ -100,7 +100,7 @@ function verifyToken(token) {
         if (!token)
             return null;
         const cleanToken = token.startsWith('Bearer ') ? token.slice(7).trim() : token;
-        const decoded = jsonwebtoken_1.default.verify(cleanToken, JWT_SECRET);
+        const decoded = jsonwebtoken_1.default.verify(cleanToken, config_1.JWT_SECRET);
         const userId = decoded.userId || decoded.id;
         return userId ? { userId } : null;
     }
@@ -428,6 +428,16 @@ function attachWebSocketServer(server) {
                                 },
                             });
                         }
+                        else if (result.ignored && result.element) {
+                            // Send operation:rejected back to sender so their canvas reconciles with server truth
+                            ws.send(JSON.stringify({
+                                type: 'operation:rejected',
+                                roomId,
+                                elementId: elementId || element.id,
+                                reason: 'stale_version',
+                                authoritativeElement: result.element,
+                            }));
+                        }
                         break;
                     }
                     case 'element:delete': {
@@ -493,6 +503,16 @@ function attachWebSocketServer(server) {
                                     element: result.element,
                                 },
                             });
+                        }
+                        else if (result.ignored && result.element) {
+                            // Send operation:rejected back to sender so their canvas reconciles with server truth
+                            ws.send(JSON.stringify({
+                                type: 'operation:rejected',
+                                roomId,
+                                elementId: elementId || element.id,
+                                reason: 'stale_version',
+                                authoritativeElement: result.element,
+                            }));
                         }
                         break;
                     }

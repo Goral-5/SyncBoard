@@ -22,6 +22,8 @@ const Room_1 = require("../models/Room");
 class RoomState {
     constructor(roomId, initialElements = [], initialRevision = 0) {
         this.MAX_RECENT_OPS = 200;
+        this.isSaving = false;
+        this.revisionAtSaveStart = 0;
         this.roomId = roomId;
         this.elements = new Map();
         this.clients = new Map();
@@ -308,29 +310,38 @@ class RoomState {
     }
     /**
      * Flushes the authoritative in-memory state to MongoDB Atlas.
-     * Resets the dirty flag once successfully saved.
+     * Concurrency-safe: prevents duplicate saves and only clears dirty flag
+     * if no new mutations occurred while the asynchronous write was executing.
      */
     persistToDatabase() {
         return __awaiter(this, void 0, void 0, function* () {
-            if (!this.dirty) {
-                return false; // Nothing changed, save disk I/O
+            if (!this.dirty || this.isSaving) {
+                return false; // Nothing changed or already saving, save disk I/O
             }
+            this.isSaving = true;
+            this.revisionAtSaveStart = this.revision;
             try {
                 const isValidId = mongoose_1.default.Types.ObjectId.isValid(this.roomId) && /^[0-9a-fA-F]{24}$/.test(this.roomId);
                 const query = isValidId ? { $or: [{ _id: this.roomId }, { slug: this.roomId }] } : { slug: this.roomId };
                 yield Room_1.Room.updateOne(query, {
                     $set: {
                         elements: this.getElements(),
-                        version: this.revision
+                        version: this.revisionAtSaveStart
                     }
                 });
-                this.dirty = false;
-                console.log(`💾 [Persist] Saved room ${this.roomId} to MongoDB (revision ${this.revision}, ${this.elements.size} elements)`);
+                // Only clear dirty flag if no new modifications occurred while the async save was writing to MongoDB
+                if (this.revision === this.revisionAtSaveStart) {
+                    this.dirty = false;
+                }
+                console.log(`💾 [Persist] Saved room ${this.roomId} to MongoDB (revision ${this.revisionAtSaveStart}, ${this.elements.size} elements)`);
                 return true;
             }
             catch (err) {
                 console.error(`❌ [Persist Error] Failed to persist room ${this.roomId}:`, err);
                 return false;
+            }
+            finally {
+                this.isSaving = false;
             }
         });
     }

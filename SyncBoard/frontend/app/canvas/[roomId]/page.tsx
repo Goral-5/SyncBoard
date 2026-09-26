@@ -5,12 +5,13 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 // @ts-expect-error Excalidraw ships this stylesheet without TypeScript declarations.
 import '@excalidraw/excalidraw/index.css';
 import { RoomChat } from '@/components/RoomChat';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { ToastContainer, toast } from 'react-toastify';
 // @ts-expect-error react-toastify ships this stylesheet without TypeScript declarations.
 import 'react-toastify/dist/ReactToastify.css';
 import { mlService } from '@/lib/mlService';
 import { useCanvasSync } from '@/hooks/useCanvasSync';
+import { BACKEND_URL } from '@/config';
 
 // HuggingFace Space root — pinged on load to wake the container
 const HF_SPACE_ROOT = 'https://sanprakhar362-paddleocr.hf.space/';
@@ -29,6 +30,7 @@ const ElementsNavigator = dynamic(
 );
 
 export default function CanvasPage() {
+  const router = useRouter();
   const params = useParams();
   const rawRoomId = params?.roomId;
   const roomId = Array.isArray(rawRoomId) ? rawRoomId[0] : (rawRoomId as string) || '';
@@ -38,6 +40,7 @@ export default function CanvasPage() {
 
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [currentUsername, setCurrentUsername] = useState<string>('Collaborator');
+  const [canJoin, setCanJoin] = useState<boolean>(false);
 
   const [showShare, setShowShare] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -58,10 +61,17 @@ export default function CanvasPage() {
     setExcalidrawAPI((prev: any) => (prev === api ? prev : api));
   }, []);
 
-  // ── 1. JWT decode for user identity ────────────────────────────────────────
+  // ── 1. Auth Guard & Auto-Join Collaborator Flow ─────────────────────────────
   useEffect(() => {
     const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
-    if (!token) return;
+    if (!token) {
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem('returnUrl', window.location.pathname);
+      }
+      router.push('/auth');
+      return;
+    }
+
     try {
       const payload = JSON.parse(
         window.atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))
@@ -71,9 +81,53 @@ export default function CanvasPage() {
     } catch (e) {
       console.error('[Canvas] Token decode error:', e);
     }
+
+    if (!roomId) return;
+
+    let isMounted = true;
+    fetch(`${BACKEND_URL}/room/${roomId}/join`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+    })
+      .then((res) => {
+        if (res.ok) {
+          if (isMounted) setCanJoin(true);
+        } else if (res.status === 401) {
+          if (typeof window !== 'undefined') {
+            sessionStorage.setItem('returnUrl', window.location.pathname);
+          }
+          router.push('/auth');
+        } else {
+          // If already collaborator or owner, allow joining canvas
+          if (isMounted) setCanJoin(true);
+        }
+      })
+      .catch((err) => {
+        console.warn('[Canvas] Auto-join room request warning:', err);
+        if (isMounted) setCanJoin(true);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [roomId, router]);
+
+  // ── 2. Toast listener for collaborator join notifications ───────────────────
+  useEffect(() => {
+    const handleUserJoined = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.username) {
+        toast.info(`👋 ${detail.username} joined the board`);
+      }
+    };
+    window.addEventListener('syncboard:user-joined', handleUserJoined);
+    return () => window.removeEventListener('syncboard:user-joined', handleUserJoined);
   }, []);
 
-  // ── 2. Warm-up: ML backend health + HF Space ping ───────────────────────────
+  // ── 3. Warm-up: ML backend health + HF Space ping ───────────────────────────
   useEffect(() => {
     mlService
       .checkHealth()
@@ -86,7 +140,7 @@ export default function CanvasPage() {
     fetch(HF_SPACE_ROOT, { method: 'GET', mode: 'no-cors' }).catch(() => {});
   }, []);
 
-  // ── 3. Member 2 Real-Time Collaboration Hook ───────────────────────────────
+  // ── 4. Member 2 Real-Time Collaboration Hook ───────────────────────────────
   const {
     connectionStatus,
     collaborators,
@@ -104,6 +158,7 @@ export default function CanvasPage() {
     excalidrawAPI,
     currentUserId,
     currentUsername,
+    canJoin,
   });
 
   // ── 4. Unified Canvas Change Handler ────────────────────────────────────────
@@ -217,8 +272,11 @@ User Request: ${aiPrompt}`,
       const { convertToExcalidrawElements } = await import('@excalidraw/excalidraw');
       const aiElements = convertToExcalidrawElements(fixedJson, { regenerateIds: false });
 
-      // Apply newly generated elements with reconciliation
-      reconcileAndApplyIncoming(aiElements);
+      // Insert elements directly into Excalidraw scene so standard onChange triggers real-time broadcast
+      const currentElements = excalidrawAPIRef.current.getSceneElements();
+      excalidrawAPIRef.current.updateScene({
+        elements: [...currentElements, ...aiElements],
+      });
 
       setShowAIModal(false);
       setAiPrompt('');
@@ -272,13 +330,31 @@ User Request: ${aiPrompt}`,
           <span className="text-xs font-mono font-bold text-slate-700">{boardRevision}</span>
         </div>
 
-        {collaborators.length > 0 && (
-          <>
-            <div className="h-3.5 w-px bg-slate-200" />
-            <div className="flex items-center gap-1 text-xs text-slate-600 font-medium">
-              <span>👥 {collaborators.length + 1} online</span>
+        <div className="h-3.5 w-px bg-slate-200" />
+        <div className="flex items-center -space-x-1.5 overflow-hidden ml-1">
+          {/* Current user avatar */}
+          <div
+            title={`${currentUsername} (You)`}
+            className="h-6 w-6 rounded-full flex items-center justify-center text-[10px] font-bold text-white bg-blue-600 ring-2 ring-white shadow-sm z-10 select-none cursor-default"
+          >
+            {(currentUsername || 'U').charAt(0).toUpperCase()}
+          </div>
+          {/* Remote collaborators avatars */}
+          {collaborators.map((c, idx) => (
+            <div
+              key={c.clientId}
+              title={`${c.username || 'Collaborator'}`}
+              className="h-6 w-6 rounded-full flex items-center justify-center text-[10px] font-bold text-white ring-2 ring-white shadow-sm select-none cursor-default"
+              style={{ backgroundColor: c.color || '#10b981', zIndex: 9 - idx }}
+            >
+              {(c.username || 'C').charAt(0).toUpperCase()}
             </div>
-          </>
+          ))}
+        </div>
+        {collaborators.length > 0 && (
+          <span className="text-xs text-slate-500 font-medium ml-1">
+            {collaborators.length + 1}
+          </span>
         )}
       </div>
 

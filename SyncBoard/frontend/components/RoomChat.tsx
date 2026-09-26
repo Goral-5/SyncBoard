@@ -29,11 +29,20 @@ export function RoomChat({ roomId, ws, currentUserId }: any) {
   useEffect(() => {
     const loadHistory = async () => {
       try {
+        const token = localStorage.getItem('token');
         const res = await axios.get(`${BACKEND_URL}/rooms/${roomId}/messages`, {
-          headers: { Authorization: localStorage.getItem('token') }
+          headers: {
+            Authorization: token
+              ? token.startsWith('Bearer ')
+                ? token
+                : `Bearer ${token}`
+              : '',
+          },
         });
         setMessages(res.data.messages || []);
-      } catch (e) { console.error("History failed", e); }
+      } catch (e) {
+        console.error("History failed", e);
+      }
     };
     if (roomId) loadHistory();
   }, [roomId]);
