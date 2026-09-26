@@ -1,25 +1,26 @@
-import express from 'express';
-import jwt from 'jsonwebtoken';
-import cors from 'cors';
-import bcrypt from 'bcrypt';
-import mongoose from 'mongoose';
+import express from "express";
+import jwt from "jsonwebtoken";
+import cors from "cors";
+import bcrypt from "bcrypt";
+import mongoose from "mongoose";
 import passport from "passport";
 import { Strategy as GoogleStrategy } from "passport-google-oauth20";
-import dotenv from 'dotenv';
-import multer from 'multer';
-import { v2 as cloudinary } from 'cloudinary';
-import { middleware } from './middleware';
-import { User } from '../models/User';
-import { Room, getRoomUserRole } from '../models/Room';
-import { Chat } from '../models/Chat';
-import { Message } from '../models/Message';
-import nodemailer from 'nodemailer';
+import dotenv from "dotenv";
+import multer from "multer";
+import { v2 as cloudinary } from "cloudinary";
+import { middleware } from "./middleware";
+import { User } from "../models/User";
+import { Room, getRoomUserRole } from "../models/Room";
+import { Chat } from "../models/Chat";
+import { Message } from "../models/Message";
+import nodemailer from "nodemailer";
+import { JWT_SECRET, MONGO_URI } from "../config";
 
-import path from 'path';
+import path from "path";
 
 dotenv.config();
-dotenv.config({ path: path.resolve(__dirname, '../../.env') });
-dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
+dotenv.config({ path: path.resolve(__dirname, "../../.env") });
+dotenv.config({ path: path.resolve(__dirname, "../../../.env") });
 
 // ── Cloudinary config ─────────────────────────────────────────────────────────
 cloudinary.config({
@@ -83,10 +84,6 @@ const upload = multer({
 //   )
 // );
 
-const JWT_SECRET = process.env.JWT_SECRET!;
-const MONGO_URI = process.env.MONGO_URI!;
-
-
 export function createExpressApp() {
   const app = express();
 
@@ -96,22 +93,21 @@ export function createExpressApp() {
 
   app.use(passport.initialize());
 
-  app.use(cors({
-    origin: [
-      'https://sketchcalibur.vercel.app',
-      'http://localhost:3000'
-    ],
-    credentials: true
-  }));
+  app.use(
+    cors({
+      origin: ["https://sketchcalibur.vercel.app", "http://localhost:3000"],
+      credentials: true,
+    }),
+  );
 
-  app.get('/', (req, res) => {
-    res.send('http server backend running');
+  app.get("/", (req, res) => {
+    res.send("http server backend running");
   });
 
-  app.get('/health', (req, res) => {
+  app.get("/health", (req, res) => {
     res.json({
-      status: 'ok',
-      mongodb: mongoose.connection.readyState === 1
+      status: "ok",
+      mongodb: mongoose.connection.readyState === 1,
     });
   });
 
@@ -122,7 +118,7 @@ export function createExpressApp() {
 
     if (!email || !password || !name) {
       return res.status(400).json({
-        message: "Missing inputs"
+        message: "Missing inputs",
       });
     }
 
@@ -130,7 +126,6 @@ export function createExpressApp() {
       const existing = await User.findOne({ email });
 
       if (existing) {
-
         if (existing.authProvider === "google") {
           return res.status(409).json({
             message: "Account exists. Please sign up using Google",
@@ -138,7 +133,7 @@ export function createExpressApp() {
         }
 
         return res.status(409).json({
-          message: "Email already exists"
+          message: "Email already exists",
         });
       }
 
@@ -154,32 +149,30 @@ export function createExpressApp() {
       console.log("✅ USER SAVED:", user._id, user.email);
 
       return res.status(201).json({
-        userId: user._id
+        userId: user._id,
       });
-
     } catch (err) {
       console.error("Signup error:", err);
 
       return res.status(500).json({
-        message: "Server error"
+        message: "Server error",
       });
     }
   });
-
 
   // ---------------------- LOGIN ----------------------
 
   app.post("/login", async (req, res) => {
     const { email, password } = req.body;
 
-    console.log('Login attempt:', {
+    console.log("Login attempt:", {
       email,
-      hasPassword: !!password
+      hasPassword: !!password,
     });
 
     if (!email || !password) {
       return res.status(400).json({
-        message: "Missing inputs"
+        message: "Missing inputs",
       });
     }
 
@@ -187,16 +180,16 @@ export function createExpressApp() {
       const user = await User.findOne({ email });
 
       if (!user) {
-        console.log('User not found:', email);
+        console.log("User not found:", email);
 
         return res.status(403).json({
-          message: "Invalid email or password"
+          message: "Invalid email or password",
         });
       }
 
-      console.log('User found:', {
+      console.log("User found:", {
         email,
-        authProvider: user.authProvider
+        authProvider: user.authProvider,
       });
 
       if (user.authProvider === "google") {
@@ -211,148 +204,133 @@ export function createExpressApp() {
         });
       }
 
-      const validPassword = await bcrypt.compare(
-        password,
-        user.password
-      );
+      const validPassword = await bcrypt.compare(password, user.password);
 
       if (!validPassword) {
-        console.log('Invalid password for:', email);
+        console.log("Invalid password for:", email);
 
         return res.status(403).json({
-          message: "Invalid email or password"
+          message: "Invalid email or password",
         });
       }
 
-      console.log('Login successful:', email);
+      console.log("Login successful:", email);
 
       const token = jwt.sign(
         {
-          userId: user._id
+          userId: user._id,
         },
         JWT_SECRET,
         {
-          expiresIn: "7d"
-        }
+          expiresIn: "7d",
+        },
       );
 
       return res.json({
-        token
+        token,
       });
-
     } catch (err) {
       console.error("Login error:", err);
 
       return res.status(500).json({
-        message: "Server error"
+        message: "Server error",
       });
     }
   });
 
-
   // ---------------------- CREATE ROOM ----------------------
 
-  app.post('/create-room', middleware, async (req: any, res) => {
+  app.post("/create-room", middleware, async (req: any, res) => {
     const { name } = req.body;
 
     if (!name) {
       return res.status(400).json({
-        message: 'Missing room name'
+        message: "Missing room name",
       });
     }
 
     try {
       const exists = await Room.findOne({
-        slug: name
+        slug: name,
       });
 
       if (exists) {
         return res.status(409).json({
-          message: 'Room already exists'
+          message: "Room already exists",
         });
       }
 
       const room = await Room.create({
         slug: name,
-        adminId: req.userId
+        adminId: req.userId,
       });
 
       res.json({
-        roomId: room._id
+        roomId: room._id,
       });
-
     } catch (e) {
       console.error(e);
 
       res.status(500).json({
-        message: 'Failed to create room'
+        message: "Failed to create room",
       });
     }
   });
 
-
   // ---------------------- GET ALL ROOMS ----------------------
 
-  app.get('/my-rooms', middleware, async (req: any, res) => {
+  app.get("/my-rooms", middleware, async (req: any, res) => {
     try {
       const userId = req.userId;
 
       const rooms = await Room.find({
-        $or: [
-          { adminId: userId },
-          { collaborators: userId }
-        ]
+        $or: [{ adminId: userId }, { collaborators: userId }],
       })
-        .populate('adminId', 'name')
-        .populate('collaborators', 'name')
+        .populate("adminId", "name")
+        .populate("collaborators", "name")
         .sort({ createdAt: -1 });
 
       res.json({
-        rooms
+        rooms,
       });
-
     } catch (e) {
-      console.error('Failed to fetch rooms:', e);
+      console.error("Failed to fetch rooms:", e);
 
       res.status(500).json({
-        message: 'Failed to fetch rooms'
+        message: "Failed to fetch rooms",
       });
     }
   });
 
-
   // ---------------------- GET LOGGED IN USER DATA ----------------------
 
-  app.get('/me', middleware, async (req: any, res) => {
+  app.get("/me", middleware, async (req: any, res) => {
     try {
       const userId = req.userId;
 
-      const user = await User.findById(userId)
-        .select('-password');
+      const user = await User.findById(userId).select("-password");
 
       if (!user) {
         return res.status(404).json({
-          message: 'User not found'
+          message: "User not found",
         });
       }
 
       res.json({
-        user
+        user,
       });
-
     } catch (e) {
-      console.error('Failed to fetch user:', e);
+      console.error("Failed to fetch user:", e);
 
       res.status(500).json({
-        message: 'Internal server error'
+        message: "Internal server error",
       });
     }
   });
 
-
   // ---------------------- UPDATE LOGGED IN USER DATA ----------------------
 
-  app.post('/me', middleware, async (req: any, res) => {
+  app.post("/me", middleware, async (req: any, res) => {
     try {
       const { name, photo } = req.body;
 
@@ -362,51 +340,47 @@ export function createExpressApp() {
         userId,
         {
           name,
-          photo
+          photo,
         },
         {
-          new: true
-        }
-      ).select('-password');
+          new: true,
+        },
+      ).select("-password");
 
       res.json({
-        message: 'Profile updated',
-        user: updatedUser
+        message: "Profile updated",
+        user: updatedUser,
       });
-
     } catch (e) {
       res.status(500).json({
-        message: 'Error updating profile'
+        message: "Error updating profile",
       });
     }
   });
 
-
   // ---------------------- GET CHATS ----------------------
 
-  app.get('/chats/:roomId', async (req, res) => {
+  app.get("/chats/:roomId", async (req, res) => {
     try {
       const roomId = req.params.roomId;
 
       const messages = await Chat.find({
-        roomId
+        roomId,
       })
         .sort({ createdAt: -1 })
         .limit(1000);
 
       res.json({
-        messages
+        messages,
       });
-
     } catch (e) {
       console.error(e);
 
       res.json({
-        messages: []
+        messages: [],
       });
     }
   });
-
 
   // -------------------------------------------------------------
   // 1. GET ROOM SNAPSHOT (/room/:idOrSlug)
@@ -415,31 +389,71 @@ export function createExpressApp() {
   // Why accept both ID and Slug?
   // Frontend URLs can use human-friendly slugs (/canvas/sprint-planning)
   // or direct database ObjectIds (/canvas/66d1234...).
-  // This endpoint resolves both cleanly without duplicate routes.
+  // ── AUTO-JOIN: Authenticated user claims editor role via shared link ──
+  app.patch("/room/:roomId/join", middleware, async (req: any, res) => {
+    const { roomId } = req.params;
+    const userId = req.userId;
+
+    try {
+      const isValidObjectId =
+        mongoose.Types.ObjectId.isValid(roomId) &&
+        /^[0-9a-fA-F]{24}$/.test(roomId);
+      const query = isValidObjectId
+        ? { $or: [{ _id: roomId }, { slug: roomId }] }
+        : { slug: roomId };
+
+      const room = await Room.findOne(query);
+      if (!room) {
+        return res.status(404).json({ message: "Room not found" });
+      }
+
+      const role = getRoomUserRole(room, userId);
+
+      if (role) {
+        // User already has access (admin or existing collaborator) — no-op
+        return res.json({ success: true, role });
+      }
+
+      // Add as editor collaborator (idempotent $addToSet)
+      await Room.updateOne(query, {
+        $addToSet: { collaborators: userId },
+      });
+
+      return res.json({ success: true, role: "editor" });
+    } catch (e) {
+      console.error("[Auto-Join] Failed:", e);
+      return res.status(500).json({ message: "Failed to join room" });
+    }
+  });
+
   // -------------------------------------------------------------
-  app.get('/room/:idOrSlug', async (req: any, res) => {
+  // 1. GET ROOM SNAPSHOT (/room/:idOrSlug)
+  // -------------------------------------------------------------
+  app.get("/room/:idOrSlug", async (req: any, res) => {
     const { idOrSlug } = req.params;
 
     try {
-      const isValidObjectId = mongoose.Types.ObjectId.isValid(idOrSlug) && /^[0-9a-fA-F]{24}$/.test(idOrSlug);
+      const isValidObjectId =
+        mongoose.Types.ObjectId.isValid(idOrSlug) &&
+        /^[0-9a-fA-F]{24}$/.test(idOrSlug);
 
       const query = isValidObjectId
         ? { $or: [{ _id: idOrSlug }, { slug: idOrSlug }] }
         : { slug: idOrSlug };
 
       const room = await Room.findOne(query)
-        .populate('adminId', 'name email photo')
-        .populate('collaborators', 'name email photo');
+        .populate("adminId", "name email photo")
+        .populate("collaborators", "name email photo");
 
       if (!room) {
-        return res.status(404).json({ message: 'Room not found' });
+        return res.status(404).json({ message: "Room not found" });
       }
 
       // Check user access if an auth token was supplied
       let role: string | null = null;
-      let token = req.headers['authorization'];
+      let token = req.headers["authorization"];
       if (token) {
-        if (token.startsWith('Bearer ')) token = token.slice(7).trim();
+        if (token.startsWith("Bearer ")) token = token.slice(7).trim();
         try {
           const decoded = jwt.verify(token, JWT_SECRET) as { userId: string };
           role = getRoomUserRole(room, decoded.userId);
@@ -454,83 +468,100 @@ export function createExpressApp() {
       // parse it, and copy it directly into room.elements. Zero data loss for existing users!
       if (!room.elements || room.elements.length === 0) {
         try {
-          const legacyChat = await Chat.findOne({ roomId: room._id }).sort({ createdAt: -1 });
+          const legacyChat = await Chat.findOne({ roomId: room._id }).sort({
+            createdAt: -1,
+          });
           if (legacyChat && legacyChat.message) {
             const parsedElements = JSON.parse(legacyChat.message);
             if (Array.isArray(parsedElements) && parsedElements.length > 0) {
               room.elements = parsedElements;
               room.version = 1;
               await room.save();
-              console.log(`[Migration] Migrated ${parsedElements.length} elements from Chat into Room ${room._id}`);
+              console.log(
+                `[Migration] Migrated ${parsedElements.length} elements from Chat into Room ${room._id}`,
+              );
             }
           }
         } catch (migErr) {
-          console.error('[Migration] Failed to migrate legacy elements from Chat:', migErr);
+          console.error(
+            "[Migration] Failed to migrate legacy elements from Chat:",
+            migErr,
+          );
         }
       }
 
       res.json({
         room,
-        role
+        role,
       });
     } catch (e) {
-      console.error('Error fetching room:', e);
-      res.status(500).json({ message: 'Failed to fetch room' });
+      console.error("Error fetching room:", e);
+      res.status(500).json({ message: "Failed to fetch room" });
     }
   });
 
-
   // ---------------------- DELETE ROOM ----------------------
 
-  app.delete('/room/:roomId', middleware, async (req: any, res) => {
+  app.delete("/room/:roomId", middleware, async (req: any, res) => {
     const { roomId } = req.params;
 
     try {
-      const isValidObjectId = mongoose.Types.ObjectId.isValid(roomId) && /^[0-9a-fA-F]{24}$/.test(roomId);
-      const query = isValidObjectId ? { $or: [{ _id: roomId }, { slug: roomId }] } : { slug: roomId };
+      const isValidObjectId =
+        mongoose.Types.ObjectId.isValid(roomId) &&
+        /^[0-9a-fA-F]{24}$/.test(roomId);
+      const query = isValidObjectId
+        ? { $or: [{ _id: roomId }, { slug: roomId }] }
+        : { slug: roomId };
 
       const room = await Room.findOne(query);
 
       if (!room) {
-        return res.status(404).json({ message: 'Room not found' });
+        return res.status(404).json({ message: "Room not found" });
       }
 
       // Only the admin / creator can delete the room
       if (room.adminId.toString() !== req.userId) {
-        return res.status(403).json({ message: 'Only the room creator can delete this room' });
+        return res
+          .status(403)
+          .json({ message: "Only the room creator can delete this room" });
       }
 
       await Room.findByIdAndDelete(room._id);
       await Chat.deleteMany({ roomId: room._id });
       await Message.deleteMany({ roomId: room._id });
 
-      res.json({ message: 'Room deleted successfully' });
+      res.json({ message: "Room deleted successfully" });
     } catch (e) {
-      console.error('Failed to delete room:', e);
-      res.status(500).json({ message: 'Failed to delete room' });
+      console.error("Failed to delete room:", e);
+      res.status(500).json({ message: "Failed to delete room" });
     }
   });
 
-
   // ---------------------- SAVE ROOM ELEMENTS (HTTP FALLBACK) ----------------------
 
-  app.put('/room/:roomId/elements', middleware, async (req: any, res) => {
+  app.put("/room/:roomId/elements", middleware, async (req: any, res) => {
     const { roomId } = req.params;
     const { elements } = req.body;
 
     try {
-      const isValidObjectId = mongoose.Types.ObjectId.isValid(roomId) && /^[0-9a-fA-F]{24}$/.test(roomId);
-      const query = isValidObjectId ? { $or: [{ _id: roomId }, { slug: roomId }] } : { slug: roomId };
+      const isValidObjectId =
+        mongoose.Types.ObjectId.isValid(roomId) &&
+        /^[0-9a-fA-F]{24}$/.test(roomId);
+      const query = isValidObjectId
+        ? { $or: [{ _id: roomId }, { slug: roomId }] }
+        : { slug: roomId };
 
       const room = await Room.findOne(query);
 
       if (!room) {
-        return res.status(404).json({ message: 'Room not found' });
+        return res.status(404).json({ message: "Room not found" });
       }
 
       const role = getRoomUserRole(room, req.userId);
       if (!role) {
-        return res.status(403).json({ message: 'You do not have write access to this room' });
+        return res
+          .status(403)
+          .json({ message: "You do not have write access to this room" });
       }
 
       if (Array.isArray(elements)) {
@@ -542,218 +573,183 @@ export function createExpressApp() {
       res.json({
         success: true,
         version: room.version,
-        updatedAt: room.updatedAt
+        updatedAt: room.updatedAt,
       });
     } catch (e) {
-      console.error('Failed to save room elements:', e);
-      res.status(500).json({ message: 'Failed to save room elements' });
+      console.error("Failed to save room elements:", e);
+      res.status(500).json({ message: "Failed to save room elements" });
     }
   });
 
-
   // ---------------------- ADD COLLABORATOR TO ROOM ----------------------
 
-  app.post(
-    '/rooms/:roomId/add-collaborator',
-    middleware,
-    async (req, res) => {
+  app.post("/rooms/:roomId/add-collaborator", middleware, async (req, res) => {
+    const { roomId } = req.params;
 
-      const { roomId } = req.params;
+    const { username, useremail } = req.body;
 
-      const { username, useremail } = req.body;
+    if (!username || !useremail) {
+      return res.status(400).json({
+        message: "Username or User email is required",
+      });
+    }
 
-      if (!username || !useremail) {
-        return res.status(400).json({
-          message: 'Username or User email is required'
-        });
-      }
+    try {
+      const userToAdd = await User.findOne({
+        name: username,
+      });
 
-      try {
-
-        const userToAdd = await User.findOne({
-          name: username
-        });
-
-        if (!userToAdd) {
-
-          const room = await Room.findById(roomId);
-
-          if (!room) {
-            return res.status(404).json({
-              message: 'Room not found'
-            });
-          }
-
-          try {
-
-            const transporter = nodemailer.createTransport({
-              host: 'smtp.gmail.com',
-              port: 465,
-              secure: true,
-              auth: {
-                user: process.env.GMAIL_USER!,
-                pass: process.env.GMAIL_PASS!,
-              },
-            });
-
-            const mailOptions = {
-              from: process.env.GMAIL_USER,
-              to: useremail,
-              subject: `Invitation to join SyncBoard Room`,
-              text:
-                `Hello,\n\nYou have been invited to join the room '${room.slug}' on SyncBoard. Please create an account using this email to join the room as a collaborator.\n\nBest regards,\nSyncBoard Team`,
-            };
-
-            await transporter.sendMail(mailOptions);
-
-            return res.status(404).json({
-              message:
-                'No such user found, but an invitation email has been sent to create an account and join the room!'
-            });
-
-          } catch (mailErr) {
-
-            console.error(
-              'Failed to send invitation email:',
-              mailErr
-            );
-
-            return res.status(404).json({
-              message:
-                'No such user found, and failed to send invitation email.'
-            });
-          }
-        }
-
+      if (!userToAdd) {
         const room = await Room.findById(roomId);
 
         if (!room) {
           return res.status(404).json({
-            message: 'Room not found'
+            message: "Room not found",
           });
         }
 
-        if (!Array.isArray(room.collaborators)) {
-          room.collaborators = [];
-        }
-
-        const isAlreadyCollaborator =
-          room.collaborators.some(
-            (id) =>
-              id.toString() === userToAdd._id.toString()
-          );
-
-        if (isAlreadyCollaborator) {
-          return res.status(400).json({
-            message: 'User is already a collaborator'
-          });
-        }
-
-        if (
-          room.adminId.toString() ===
-          userToAdd._id.toString()
-        ) {
-          return res.status(400).json({
-            message: 'Admin is already in the room'
-          });
-        }
-
-        room.collaborators.push(userToAdd._id);
-
-        await room.save();
-
-        res.status(200).json({
-          message: `${username} added as collaborator`,
-          collaboratorId: userToAdd._id
-        });
-
-      } catch (e) {
-
-        console.error(
-          'Error adding collaborator:',
-          e
-        );
-
-        res.status(500).json({
-          message: 'Failed to add collaborator'
-        });
-      }
-    }
-  );
-
-
-  // ---------------------- STORE CHAT (LEGACY DRAWING FALLBACK) ----------------------
-
-  app.post(
-    '/chats/:roomId',
-    middleware,
-    async (req: any, res) => {
-      try {
-        const roomId = req.params.roomId;
-        const { message } = req.body;
-
-        // If message is a serialized JSON array of elements, also persist directly to Room!
         try {
-          const parsed = JSON.parse(message);
-          if (Array.isArray(parsed)) {
-            const isValidObjectId = mongoose.Types.ObjectId.isValid(roomId) && /^[0-9a-fA-F]{24}$/.test(roomId);
-            const query = isValidObjectId ? { $or: [{ _id: roomId }, { slug: roomId }] } : { slug: roomId };
-            await Room.updateOne(query, {
-              $set: { elements: parsed },
-              $inc: { version: 1 }
-            });
-          }
-        } catch {
-          // Not a JSON elements array, standard message
+          const transporter = nodemailer.createTransport({
+            host: "smtp.gmail.com",
+            port: 465,
+            secure: true,
+            auth: {
+              user: process.env.GMAIL_USER!,
+              pass: process.env.GMAIL_PASS!,
+            },
+          });
+
+          const mailOptions = {
+            from: process.env.GMAIL_USER,
+            to: useremail,
+            subject: `Invitation to join SyncBoard Room`,
+            text: `Hello,\n\nYou have been invited to join the room '${room.slug}' on SyncBoard. Please create an account using this email to join the room as a collaborator.\n\nBest regards,\nSyncBoard Team`,
+          };
+
+          await transporter.sendMail(mailOptions);
+
+          return res.status(404).json({
+            message:
+              "No such user found, but an invitation email has been sent to create an account and join the room!",
+          });
+        } catch (mailErr) {
+          console.error("Failed to send invitation email:", mailErr);
+
+          return res.status(404).json({
+            message: "No such user found, and failed to send invitation email.",
+          });
         }
+      }
 
-        await Chat.create({
-          roomId,
-          userId: req.userId,
-          message
-        });
+      const room = await Room.findById(roomId);
 
-        res.status(200).json({
-          message: 'Drawing stored in room'
-        });
-      } catch (e) {
-        console.error(e);
-        res.status(500).json({
-          message: 'Failed to store drawing'
+      if (!room) {
+        return res.status(404).json({
+          message: "Room not found",
         });
       }
-    }
-  );
 
+      if (!Array.isArray(room.collaborators)) {
+        room.collaborators = [];
+      }
+
+      const isAlreadyCollaborator = room.collaborators.some(
+        (id) => id.toString() === userToAdd._id.toString(),
+      );
+
+      if (isAlreadyCollaborator) {
+        return res.status(400).json({
+          message: "User is already a collaborator",
+        });
+      }
+
+      if (room.adminId.toString() === userToAdd._id.toString()) {
+        return res.status(400).json({
+          message: "Admin is already in the room",
+        });
+      }
+
+      room.collaborators.push(userToAdd._id);
+
+      await room.save();
+
+      res.status(200).json({
+        message: `${username} added as collaborator`,
+        collaboratorId: userToAdd._id,
+      });
+    } catch (e) {
+      console.error("Error adding collaborator:", e);
+
+      res.status(500).json({
+        message: "Failed to add collaborator",
+      });
+    }
+  });
+
+  // ---------------------- STORE CHAT ----------------------
+
+  app.post("/chats/:roomId", middleware, async (req: any, res) => {
+    try {
+      const roomId = req.params.roomId;
+      const { message } = req.body;
+
+      await Chat.create({
+        roomId,
+        userId: req.userId,
+        message,
+      });
+
+      res.status(200).json({
+        message: "Message stored in chat",
+      });
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({
+        message: "Failed to store message",
+      });
+    }
+  });
 
   // ---------------------- GET TEXT CHAT ----------------------
 
-  app.get(
-    '/rooms/:roomId/messages',
-    middleware,
-    async (req: any, res) => {
+  app.get("/rooms/:roomId/messages", middleware, async (req: any, res) => {
+    try {
+      const { roomId } = req.params;
+      const isValidObjectId =
+        mongoose.Types.ObjectId.isValid(roomId) &&
+        /^[0-9a-fA-F]{24}$/.test(roomId);
 
-      try {
+      let targetRoomId = roomId;
+      if (!isValidObjectId) {
+        const roomDoc = (await Room.findOne({ slug: roomId }).select(
+          "_id",
+        )) as {
+          _id: mongoose.Types.ObjectId;
+        } | null;
 
-        const messages = await Message.find({
-          roomId: req.params.roomId
-        })
-          .populate('userId', 'name photo')
-          .sort({ createdAt: 1 });
+        if (!roomDoc) {
+          return res.status(404).json({ message: "Room not found" });
+        }
 
-        res.json({
-          messages
-        });
-
-      } catch (e) {
-
-        res.status(500).json({
-          message: 'Error fetching chat history'
-        });
+        targetRoomId = roomDoc._id.toString();
       }
-    }
-  );
 
+      const messages = await Message.find({
+        roomId: targetRoomId,
+      })
+        .populate("userId", "name photo")
+        .sort({ createdAt: 1 });
+
+      res.json({
+        messages,
+      });
+    } catch (e) {
+      console.error("Error fetching chat history:", e);
+      res.status(500).json({
+        message: "Error fetching chat history",
+      });
+    }
+  });
 
   // ---------------------- GOOGLE AUTH ----------------------
 
@@ -772,7 +768,6 @@ export function createExpressApp() {
   //     session: false,
   //   })
   // );
-
 
   // app.get(
   //   "/auth/google/callback",
@@ -798,46 +793,38 @@ export function createExpressApp() {
   //   }
   // );
 
-
   // ---------------------- UPLOAD IMAGE TO CLOUDINARY ----------------------
 
   app.post(
-    '/upload-image',
+    "/upload-image",
     middleware,
-    upload.single('image'),
+    upload.single("image"),
     async (req: any, res) => {
-
       try {
-
         if (!req.file) {
           return res.status(400).json({
-            message: 'No image file provided'
+            message: "No image file provided",
           });
         }
 
-        const result = await new Promise<any>(
-          (resolve, reject) => {
+        const result = await new Promise<any>((resolve, reject) => {
+          const stream = cloudinary.uploader.upload_stream(
+            {
+              folder: "sketchcalibur",
+              resource_type: "image",
+              quality: "auto:best",
+            },
+            (error, result) => {
+              if (error) {
+                reject(error);
+              } else {
+                resolve(result);
+              }
+            },
+          );
 
-            const stream =
-              cloudinary.uploader.upload_stream(
-                {
-                  folder: 'sketchcalibur',
-                  resource_type: 'image',
-                  quality: 'auto:best',
-                },
-                (error, result) => {
-
-                  if (error) {
-                    reject(error);
-                  } else {
-                    resolve(result);
-                  }
-                }
-              );
-
-            stream.end(req.file!.buffer);
-          }
-        );
+          stream.end(req.file!.buffer);
+        });
 
         res.json({
           success: true,
@@ -846,21 +833,15 @@ export function createExpressApp() {
           width: result.width,
           height: result.height,
         });
-
       } catch (e) {
-
-        console.error(
-          'Cloudinary upload error:',
-          e
-        );
+        console.error("Cloudinary upload error:", e);
 
         res.status(500).json({
-          message: 'Image upload failed'
+          message: "Image upload failed",
         });
       }
-    }
+    },
   );
-
 
   return app;
 }
