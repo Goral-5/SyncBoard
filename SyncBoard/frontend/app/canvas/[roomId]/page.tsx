@@ -12,6 +12,8 @@ import 'react-toastify/dist/ReactToastify.css';
 import { mlService } from '@/lib/mlService';
 import { useCanvasSync } from '@/hooks/useCanvasSync';
 import { BACKEND_URL } from '@/config';
+import { useTheme } from 'next-themes';
+import { Sun, Moon } from 'lucide-react';
 
 // HuggingFace Space root — pinged on load to wake the container
 const HF_SPACE_ROOT = 'https://sanprakhar362-paddleocr.hf.space/';
@@ -34,6 +36,16 @@ export default function CanvasPage() {
   const params = useParams();
   const rawRoomId = params?.roomId;
   const roomId = Array.isArray(rawRoomId) ? rawRoomId[0] : (rawRoomId as string) || '';
+
+  const { theme, setTheme, resolvedTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  const currentTheme: 'light' | 'dark' =
+    (mounted ? (resolvedTheme || theme) : 'light') === 'dark' ? 'dark' : 'light';
 
   const excalidrawAPIRef = useRef<any>(null);
   const [excalidrawAPI, setExcalidrawAPI] = useState<any>(null);
@@ -180,12 +192,17 @@ export default function CanvasPage() {
           }
           return { scrollX: nextScrollX, scrollY: nextScrollY, zoom: nextZoom };
         });
+
+        // Sync theme if toggled from inside Excalidraw
+        if (appState.theme && appState.theme !== (resolvedTheme || theme)) {
+          setTheme(appState.theme);
+        }
       }
 
       // Delegate differential synchronization to hook
       handleCanvasChange(elements, appState);
     },
-    [handleCanvasChange]
+    [handleCanvasChange, setTheme, resolvedTheme, theme]
   );
 
   // ── 5. Unified Pointer Update Handler ───────────────────────────────────────
@@ -302,12 +319,12 @@ User Request: ${aiPrompt}`,
 
   return (
     <div
-      className="fixed inset-0 overflow-hidden bg-[#f0f0f0]"
+      className="fixed inset-0 overflow-hidden bg-[#f0f0f0] dark:bg-[#121212] transition-colors"
       onPointerDown={handlePointerDown}
       onPointerUp={handlePointerUp}
     >
       {/* Top Presence & Status Header Bar */}
-      <div className="fixed top-3 left-3 z-50 flex items-center gap-2 bg-white/90 backdrop-blur-md px-3 py-1.5 rounded-xl shadow-md border border-slate-200">
+      <div className="fixed top-3 left-3 z-50 flex items-center gap-2 bg-white/90 dark:bg-neutral-900/90 backdrop-blur-md px-3 py-1.5 rounded-xl shadow-md border border-slate-200 dark:border-neutral-800">
         <div className="flex items-center gap-1.5">
           <span
             className={`h-2.5 w-2.5 rounded-full ${
@@ -318,24 +335,24 @@ User Request: ${aiPrompt}`,
                 : 'bg-rose-500'
             }`}
           />
-          <span className="text-xs font-semibold text-slate-700 capitalize">
+          <span className="text-xs font-semibold text-slate-700 dark:text-neutral-200 capitalize">
             {connectionStatus}
           </span>
         </div>
 
-        <div className="h-3.5 w-px bg-slate-200" />
+        <div className="h-3.5 w-px bg-slate-200 dark:bg-neutral-700" />
 
         <div className="flex items-center gap-1">
-          <span className="text-xs text-slate-500">Rev:</span>
-          <span className="text-xs font-mono font-bold text-slate-700">{boardRevision}</span>
+          <span className="text-xs text-slate-500 dark:text-neutral-400">Rev:</span>
+          <span className="text-xs font-mono font-bold text-slate-700 dark:text-neutral-200">{boardRevision}</span>
         </div>
 
-        <div className="h-3.5 w-px bg-slate-200" />
+        <div className="h-3.5 w-px bg-slate-200 dark:bg-neutral-700" />
         <div className="flex items-center -space-x-1.5 overflow-hidden ml-1">
           {/* Current user avatar */}
           <div
             title={`${currentUsername} (You)`}
-            className="h-6 w-6 rounded-full flex items-center justify-center text-[10px] font-bold text-white bg-blue-600 ring-2 ring-white shadow-sm z-10 select-none cursor-default"
+            className="h-6 w-6 rounded-full flex items-center justify-center text-[10px] font-bold text-white bg-blue-600 ring-2 ring-white dark:ring-neutral-900 shadow-sm z-10 select-none cursor-default"
           >
             {(currentUsername || 'U').charAt(0).toUpperCase()}
           </div>
@@ -344,7 +361,7 @@ User Request: ${aiPrompt}`,
             <div
               key={c.clientId}
               title={`${c.username || 'Collaborator'}`}
-              className="h-6 w-6 rounded-full flex items-center justify-center text-[10px] font-bold text-white ring-2 ring-white shadow-sm select-none cursor-default"
+              className="h-6 w-6 rounded-full flex items-center justify-center text-[10px] font-bold text-white ring-2 ring-white dark:ring-neutral-900 shadow-sm select-none cursor-default"
               style={{ backgroundColor: c.color || '#10b981', zIndex: 9 - idx }}
             >
               {(c.username || 'C').charAt(0).toUpperCase()}
@@ -352,16 +369,30 @@ User Request: ${aiPrompt}`,
           ))}
         </div>
         {collaborators.length > 0 && (
-          <span className="text-xs text-slate-500 font-medium ml-1">
+          <span className="text-xs text-slate-500 dark:text-neutral-400 font-medium ml-1">
             {collaborators.length + 1}
           </span>
         )}
+
+        {/* Theme Toggle Button */}
+        <div className="h-3.5 w-px bg-slate-200 dark:bg-neutral-700" />
+        <button
+          onClick={() => setTheme(currentTheme === 'dark' ? 'light' : 'dark')}
+          title={currentTheme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+          className="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-600 dark:text-neutral-300 transition flex items-center justify-center cursor-pointer"
+        >
+          {mounted && currentTheme === 'dark' ? (
+            <Sun className="h-4 w-4" />
+          ) : (
+            <Moon className="h-4 w-4" />
+          )}
+        </button>
       </div>
 
       {/* Main Excalidraw Canvas */}
       <Excalidraw
         excalidrawAPI={handleExcalidrawAPI}
-        theme="light"
+        theme={currentTheme}
         onChange={onExcalidrawChange}
         onPointerUpdate={onPointerUpdate}
         UIOptions={{
@@ -369,14 +400,15 @@ User Request: ${aiPrompt}`,
             loadScene: true,
             export: { saveFileToDisk: true },
             saveAsImage: true,
+            toggleTheme: true,
           },
         }}
       />
 
       {/* Loading Overlay */}
       {isLoadingRoom && (
-        <div className="fixed inset-0 z-30 pointer-events-none flex items-center justify-center bg-white/40 backdrop-blur-[2px]">
-          <div className="bg-white/95 px-4 py-2 rounded-xl shadow-lg border border-slate-200 text-xs font-semibold text-slate-700 flex items-center gap-2">
+        <div className="fixed inset-0 z-30 pointer-events-none flex items-center justify-center bg-white/40 dark:bg-neutral-950/40 backdrop-blur-[2px]">
+          <div className="bg-white/95 dark:bg-neutral-900/95 px-4 py-2 rounded-xl shadow-lg border border-slate-200 dark:border-neutral-800 text-xs font-semibold text-slate-700 dark:text-neutral-200 flex items-center gap-2">
             <span className="h-2 w-2 rounded-full bg-blue-600 animate-ping" />
             Syncing room state...
           </div>
@@ -420,7 +452,7 @@ User Request: ${aiPrompt}`,
       </div>
 
       {/* Bottom Floating Control Bar */}
-      <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 bg-white/90 backdrop-blur-md px-4 py-2 rounded-xl shadow-lg border border-slate-200">
+      <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 bg-white/90 dark:bg-neutral-900/90 backdrop-blur-md px-4 py-2 rounded-xl shadow-lg border border-slate-200 dark:border-neutral-800">
         <button
           onClick={() => setShowAIModal(true)}
           className="px-4 py-1.5 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:opacity-90 transition shadow-sm"
@@ -428,13 +460,13 @@ User Request: ${aiPrompt}`,
           AI Magic ✨
         </button>
 
-        <div className="flex items-center gap-1 text-xs text-slate-500 font-medium px-2 py-1 bg-slate-100 rounded-md">
+        <div className="flex items-center gap-1 text-xs text-slate-500 dark:text-neutral-400 font-medium px-2 py-1 bg-slate-100 dark:bg-neutral-800 rounded-md">
           <span>⚡ Auto-sync active</span>
         </div>
 
         <button
           onClick={handleShare}
-          className="text-sm font-semibold text-blue-600 border border-blue-600 rounded-lg px-4 py-1.5 bg-white hover:bg-blue-50 transition-all shadow-sm"
+          className="text-sm font-semibold text-blue-600 dark:text-blue-400 border border-blue-600 dark:border-blue-500 rounded-lg px-4 py-1.5 bg-white dark:bg-neutral-900 hover:bg-blue-50 dark:hover:bg-neutral-800 transition-all shadow-sm"
         >
           Share
         </button>
@@ -443,22 +475,22 @@ User Request: ${aiPrompt}`,
       {/* AI Modal */}
       {showAIModal && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100]">
-          <div className="bg-white p-6 rounded-2xl w-[450px] shadow-2xl">
-            <h3 className="text-lg font-bold mb-3 text-gray-800">Generate with SyncBoard AI</h3>
-            <h5 className="text-sm mb-3 text-gray-600">
+          <div className="bg-white dark:bg-neutral-900 p-6 rounded-2xl w-[450px] shadow-2xl border border-slate-200 dark:border-neutral-800">
+            <h3 className="text-lg font-bold mb-3 text-gray-800 dark:text-neutral-100">Generate with SyncBoard AI</h3>
+            <h5 className="text-sm mb-3 text-gray-600 dark:text-neutral-400">
               Describe the diagram, workflow, or system architecture you want to construct:
             </h5>
             <textarea
               autoFocus
               value={aiPrompt}
               onChange={(e) => setAiPrompt(e.target.value)}
-              className="w-full border-2 border-gray-100 p-3 rounded-xl focus:border-blue-500 outline-none transition h-32 text-sm text-slate-800"
+              className="w-full border-2 border-gray-100 dark:border-neutral-700 bg-white dark:bg-neutral-800 p-3 rounded-xl focus:border-blue-500 outline-none transition h-32 text-sm text-slate-800 dark:text-neutral-100"
               placeholder="e.g. A microservices architecture with an API gateway, auth service, database, and message queue..."
             />
             <div className="flex justify-end gap-3 mt-4">
               <button
                 onClick={() => setShowAIModal(false)}
-                className="px-4 py-2 text-sm text-gray-500 hover:bg-gray-100 rounded-lg"
+                className="px-4 py-2 text-sm text-gray-500 dark:text-neutral-400 hover:bg-gray-100 dark:hover:bg-neutral-800 rounded-lg"
               >
                 Cancel
               </button>
@@ -476,12 +508,12 @@ User Request: ${aiPrompt}`,
 
       {/* Share Popup */}
       {showShare && (
-        <div className="absolute bottom-20 left-1/2 -translate-x-1/2 bg-white border border-slate-200 rounded-lg shadow-xl p-4 w-72 z-50">
-          <div className="flex justify-between items-center mb-2 text-sm font-semibold text-blue-600">
+        <div className="absolute bottom-20 left-1/2 -translate-x-1/2 bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-lg shadow-xl p-4 w-72 z-50">
+          <div className="flex justify-between items-center mb-2 text-sm font-semibold text-blue-600 dark:text-blue-400">
             <span>Share Link</span>
             <button
               onClick={() => setShowShare(false)}
-              className="text-blue-600 text-xl font-semibold leading-none"
+              className="text-blue-600 dark:text-blue-400 text-xl font-semibold leading-none"
             >
               ×
             </button>
@@ -490,7 +522,7 @@ User Request: ${aiPrompt}`,
             <input
               readOnly
               value={typeof window !== 'undefined' ? window.location.href : ''}
-              className="flex-1 text-black text-xs px-2 py-1.5 rounded border bg-slate-50"
+              className="flex-1 text-black dark:text-neutral-100 text-xs px-2 py-1.5 rounded border border-slate-200 dark:border-neutral-700 bg-slate-50 dark:bg-neutral-800"
             />
             <button
               onClick={handleCopyLink}
@@ -518,7 +550,7 @@ User Request: ${aiPrompt}`,
         newestOnTop
         closeOnClick
         pauseOnHover
-        theme="light"
+        theme={currentTheme}
       />
     </div>
   );
